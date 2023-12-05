@@ -24,7 +24,7 @@ pub enum JSONParseError {
 
 pub fn parse<'a>(
     on: &'a str,
-    cb: impl for<'b> Fn(&'b [JSONKey<'a>], RootJSONValue<'a>),
+    mut cb: impl for<'b> FnMut(&'b [JSONKey<'a>], RootJSONValue<'a>),
 ) -> Result<(), (usize, JSONParseError)> {
     let chars = on.char_indices();
 
@@ -39,6 +39,7 @@ pub fn parse<'a>(
             start: usize,
             multiline: bool,
             last_was_asterisk: bool,
+            hash: bool,
         },
         ExpectingValue,
         None,
@@ -119,6 +120,7 @@ pub fn parse<'a>(
             State::Comment {
                 ref mut last_was_asterisk,
                 ref mut multiline,
+                hash,
                 start,
             } => {
                 if char == '\n' && !*multiline {
@@ -127,7 +129,7 @@ pub fn parse<'a>(
                     } else {
                         state = State::InObject
                     }
-                } else if char == '*' && start + 1 == idx {
+                } else if char == '*' && start + 1 == idx && !hash {
                     *multiline = true
                 } else if *multiline {
                     if *last_was_asterisk && char == '/' {
@@ -152,10 +154,11 @@ pub fn parse<'a>(
                         start: idx + '"'.len_utf8(),
                         escaped: false,
                     },
-                    '/' => State::Comment {
+                    c @ ('/' | '#') => State::Comment {
                         last_was_asterisk: false,
                         start: idx,
                         multiline: false,
+                        hash: c == '#',
                     },
                     '0'..='9' | '-' => State::NumberValue { start: idx },
                     't' | 'f' | 'n' => State::TrueFalseNull { start: idx },
