@@ -1,4 +1,4 @@
-use simple_json_parser::parse;
+use simple_json_parser::{parse, JSONParseError};
 
 fn main() {
     let content = r#"{
@@ -83,7 +83,7 @@ fn main() {
 
     let result = parse(content, |keys, value| eprintln!("{keys:?} -> {value:?}"));
 
-    if let Err((idx, err)) = result {
-        eprintln!("{err:?} @ {idx}")
+    if let Err(JSONParseError { at, reason }) = result {
+        eprintln!("{reason:?} @ {at}");
     }
 }
