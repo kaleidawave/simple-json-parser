@@ -14,7 +14,7 @@ pub enum RootJSONValue<'a> {
 }
 
 #[derive(Debug)]
-pub enum JSONParseError {
+pub enum JSONParseErrorReason {
     ExpectedColon,
     ExpectedEndOfValue,
     ExpectedBracket,
@@ -22,12 +22,44 @@ pub enum JSONParseError {
     ExpectedValue,
 }
 
+#[derive(Debug)]
+pub struct JSONParseError {
+    pub at: usize,
+    pub reason: JSONParseErrorReason,
+}
+
+impl std::error::Error for JSONParseError {}
+
+impl std::fmt::Display for JSONParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+        f.write_fmt(format_args!(
+            "JSONParseError: {:?} at {:?}",
+            self.reason, self.at
+        ))
+    }
+}
+
+/// If you want to return early (not parse the whole input) use [`parse_with_exit_signal`]
+///
+/// # Errors
+/// Returns an error if it tries to parse invalid JSON input
 pub fn parse<'a>(
     on: &'a str,
-    cb: impl for<'b> Fn(&'b [JSONKey<'a>], RootJSONValue<'a>),
-) -> Result<(), (usize, JSONParseError)> {
-    let chars = on.char_indices();
+    mut cb: impl for<'b> FnMut(&'b [JSONKey<'a>], RootJSONValue<'a>),
+) -> Result<(), JSONParseError> {
+    parse_with_exit_signal(on, |k, v| {
+        cb(k, v);
+        false
+    })
+}
 
+/// # Errors
+/// Returns an error if it tries to parse invalid JSON input
+#[allow(clippy::too_many_lines)]
+pub fn parse_with_exit_signal<'a>(
+    on: &'a str,
+    mut cb: impl for<'b> FnMut(&'b [JSONKey<'a>], RootJSONValue<'a>) -> bool,
+) -> Result<(), JSONParseError> {
     enum State {
         InKey {
             escaped: bool,
@@ -39,6 +71,7 @@ pub fn parse<'a>(
             start: usize,
             multiline: bool,
             last_was_asterisk: bool,
+            hash: bool,
         },
         ExpectingValue,
         None,
@@ -55,6 +88,8 @@ pub fn parse<'a>(
         EndOfValue,
     }
 
+    let chars = on.char_indices();
+
     let mut key_chain = Vec::new();
     let mut state = State::None;
 
@@ -64,7 +99,7 @@ pub fn parse<'a>(
             char: char,
             state: &mut State,
             key_chain: &mut Vec<JSONKey<'_>>,
-        ) -> Result<(), (usize, JSONParseError)> {
+        ) -> Result<(), JSONParseError> {
             if char == ',' {
                 if let Some(JSONKey::Index(i)) = key_chain.last_mut() {
                     *i += 1;
@@ -78,7 +113,10 @@ pub fn parse<'a>(
             } else if let (']', Some(JSONKey::Index(..))) = (char, key_chain.last()) {
                 key_chain.pop();
             } else if !char.is_whitespace() {
-                return Err((idx, JSONParseError::ExpectedEndOfValue));
+                return Err(JSONParseError {
+                    at: idx,
+                    reason: JSONParseErrorReason::ExpectedEndOfValue,
+                });
             }
             Ok(())
         }
@@ -101,7 +139,10 @@ pub fn parse<'a>(
             } => {
                 if !*escaped && char == '"' {
                     state = State::EndOfValue;
-                    cb(&key_chain, RootJSONValue::String(&on[start..idx]));
+                    let res = cb(&key_chain, RootJSONValue::String(&on[start..idx]));
+                    if res {
+                        return Ok(());
+                    }
                 } else {
                     *escaped = char == '\\';
                 }
@@ -110,7 +151,10 @@ pub fn parse<'a>(
                 if char == ':' {
                     state = State::ExpectingValue;
                 } else if !char.is_whitespace() {
-                    return Err((idx, JSONParseError::ExpectedColon));
+                    return Err(JSONParseError {
+                        at: idx,
+                        reason: JSONParseErrorReason::ExpectedColon,
+                    });
                 }
             }
             State::EndOfValue => {
@@ -119,25 +163,26 @@ pub fn parse<'a>(
             State::Comment {
                 ref mut last_was_asterisk,
                 ref mut multiline,
+                hash,
                 start,
             } => {
                 if char == '\n' && !*multiline {
                     if let Some(JSONKey::Index(..)) = key_chain.last() {
-                        state = State::ExpectingValue
+                        state = State::ExpectingValue;
                     } else {
-                        state = State::InObject
+                        state = State::InObject;
                     }
-                } else if char == '*' && start + 1 == idx {
-                    *multiline = true
+                } else if char == '*' && start + 1 == idx && !hash {
+                    *multiline = true;
                 } else if *multiline {
                     if *last_was_asterisk && char == '/' {
                         if let Some(JSONKey::Index(..)) = key_chain.last() {
-                            state = State::ExpectingValue
+                            state = State::ExpectingValue;
                         } else {
-                            state = State::InObject
+                            state = State::InObject;
                         }
                     } else {
-                        *last_was_asterisk = char == '*'
+                        *last_was_asterisk = char == '*';
                     }
                 }
             }
@@ -152,19 +197,20 @@ pub fn parse<'a>(
                         start: idx + '"'.len_utf8(),
                         escaped: false,
                     },
-                    '/' => State::Comment {
+                    c @ ('/' | '#') => State::Comment {
                         last_was_asterisk: false,
                         start: idx,
                         multiline: false,
+                        hash: c == '#',
                     },
                     '0'..='9' | '-' => State::NumberValue { start: idx },
                     't' | 'f' | 'n' => State::TrueFalseNull { start: idx },
-                    char => {
-                        if !char.is_whitespace() {
-                            return Err((idx, JSONParseError::ExpectedValue));
-                        } else {
-                            state
-                        }
+                    char if char.is_whitespace() => state,
+                    _ => {
+                        return Err(JSONParseError {
+                            at: idx,
+                            reason: JSONParseErrorReason::ExpectedValue,
+                        })
                     }
                 }
             }
@@ -176,9 +222,9 @@ pub fn parse<'a>(
                     };
                 } else if char == '}' {
                     if let Some(JSONKey::Index(..)) = key_chain.last() {
-                        state = State::ExpectingValue
+                        state = State::ExpectingValue;
                     } else {
-                        state = State::InObject
+                        state = State::InObject;
                     }
                 }
             }
@@ -186,13 +232,19 @@ pub fn parse<'a>(
                 if char == '{' {
                     state = State::InObject;
                 } else if !char.is_whitespace() {
-                    return Err((idx, JSONParseError::ExpectedBracket));
+                    return Err(JSONParseError {
+                        at: idx,
+                        reason: JSONParseErrorReason::ExpectedBracket,
+                    });
                 }
             }
             State::NumberValue { start } => {
                 // TODO actual number handing
                 if matches!(char, '\n' | ' ' | '}' | ',' | ']') {
-                    cb(&key_chain, RootJSONValue::Number(&on[start..idx]));
+                    let res = cb(&key_chain, RootJSONValue::Number(&on[start..idx]));
+                    if res {
+                        return Ok(());
+                    }
                     end_of_value(idx, char, &mut state, &mut key_chain)?;
                 }
             }
@@ -203,21 +255,35 @@ pub fn parse<'a>(
                 } else if diff == 4 {
                     match &on[start..=idx] {
                         "true" => {
-                            cb(&key_chain, RootJSONValue::True);
+                            let res = cb(&key_chain, RootJSONValue::True);
+                            if res {
+                                return Ok(());
+                            }
                             state = State::EndOfValue;
                         }
                         "null" => {
-                            cb(&key_chain, RootJSONValue::Null);
+                            let res = cb(&key_chain, RootJSONValue::Null);
+                            if res {
+                                return Ok(());
+                            }
                             state = State::EndOfValue;
                         }
                         "fals" => {}
-                        _ => return Err((idx, JSONParseError::ExpectedTrueFalseNull)),
+                        _ => {
+                            return Err(JSONParseError {
+                                at: idx,
+                                reason: JSONParseErrorReason::ExpectedTrueFalseNull,
+                            })
+                        }
                     }
                 } else if let "false" = &on[start..=idx] {
                     cb(&key_chain, RootJSONValue::False);
                     state = State::EndOfValue;
                 } else {
-                    return Err((idx, JSONParseError::ExpectedTrueFalseNull));
+                    return Err(JSONParseError {
+                        at: idx,
+                        reason: JSONParseErrorReason::ExpectedTrueFalseNull,
+                    });
                 }
             }
         }
