@@ -112,6 +112,14 @@ pub fn parse_with_exit_signal<'a>(
                 key_chain.pop();
             } else if let (']', Some(JSONKey::Index(..))) = (char, key_chain.last()) {
                 key_chain.pop();
+            } else if let c @ ('/' | '#') = char {
+                key_chain.pop();
+                *state = State::Comment {
+                    last_was_asterisk: false,
+                    start: idx,
+                    multiline: false,
+                    hash: c == '#'
+                };
             } else if !char.is_whitespace() {
                 return Err(JSONParseError {
                     at: idx,
@@ -240,11 +248,12 @@ pub fn parse_with_exit_signal<'a>(
             }
             State::NumberValue { start } => {
                 // TODO actual number handing
-                if matches!(char, '\n' | ' ' | '}' | ',' | ']') {
+                if char.is_whitespace() || matches!(char, '}' | ',' | ']') {
                     let res = cb(&key_chain, RootJSONValue::Number(&on[start..idx]));
                     if res {
                         return Ok(());
                     }
+                    state = State::EndOfValue;
                     end_of_value(idx, char, &mut state, &mut key_chain)?;
                 }
             }

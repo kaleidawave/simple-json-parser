@@ -1,7 +1,7 @@
 use simple_json_parser::{parse, JSONParseError};
 
 fn main() {
-    let content = r#"{
+    let base = r#"{
         "name": "ezno",
         "version": "0.0.14",
         "description": "A JavaScript compiler and TypeScript checker written in Rust with a focus on static analysis and runtime performance",
@@ -81,7 +81,13 @@ fn main() {
         }
     }"#;
 
-    let result = parse(content, |keys, value| eprintln!("{keys:?} -> {value:?}"));
+    let content = if let Some(path) = std::env::args().nth(1) {
+        std::fs::read_to_string(path).unwrap()
+    } else {
+        base.to_owned()
+    };
+
+    let result = parse(&content, |keys, value| eprintln!("{keys:?} -> {value:?}"));
 
     if let Err(JSONParseError { at, reason }) = result {
         eprintln!("{reason:?} @ {at}");

@@ -59,6 +59,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     parse(&content, |keys, value| root.set(keys, value))?;
 
-    eprintln!("Object:\n{root:#?}");
+    eprintln!("Parsed: {root:#?}");
     Ok(())
 }
