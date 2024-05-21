@@ -118,7 +118,7 @@ pub fn parse_with_exit_signal<'a>(
                     last_was_asterisk: false,
                     start: idx,
                     multiline: false,
-                    hash: c == '#'
+                    hash: c == '#',
                 };
             } else if !char.is_whitespace() {
                 return Err(JSONParseError {

@@ -46,6 +46,7 @@ fn main() {
             "email": "kaleidawave@gmail.com",
             "url": "https://kaleidawave.github.io/"
         },
+        "some_number": 4,
         "funding": {
             "type": "individual",
             /*
