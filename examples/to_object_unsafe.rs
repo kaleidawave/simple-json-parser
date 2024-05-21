@@ -71,6 +71,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    eprintln!("Object:\n{root:#?}");
+    eprintln!("Parsed: {root:#?}");
     Ok(())
 }

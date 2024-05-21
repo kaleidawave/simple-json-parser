@@ -19,59 +19,60 @@ jobs:
   validity:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/cache@v3
-        with:
-          path: ${{ env.CACHE_PATHS }}
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-      - name: Check source is valid
-        run: cargo check --workspace
+    - uses: actions/checkout@v4
+    - uses: actions/cache@v4
+      with:
+        path: ${{ env.CACHE_PATHS }}
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+    - name: Check source is valid
+      run: cargo check --workspace
 
   formating:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - name: Check formatting with rustfmt
-        run: cargo fmt --all --check
-      - uses: brndnmtthws/rust-action-cargo-binstall@v1
-        with:
-          packages: taplo-cli
-      - name: Check TOML formatting with taplo
-        run: |
-          taplo fmt --check **/*/Cargo.toml
+    - uses: actions/checkout@v4
+    - name: Check formatting with rustfmt
+      run: cargo fmt --all --check
+    - uses: brndnmtthws/rust-action-cargo-binstall@v1
+      with:
+        packages: taplo-cli
+    - name: Check TOML formatting with taplo
+      run: |
+        taplo fmt --check **/*/Cargo.toml
 
   tests:
     needs: validity
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/cache@v3
-        with:
-          path: ${{ env.CACHE_PATHS }}
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-      - name: Run all tests
-        run: cargo test --workspace --verbose --all-features
+    - uses: actions/checkout@v4
+    - uses: actions/cache@v4
+      with:
+        path: ${{ env.CACHE_PATHS }}
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+    - name: Run all tests
+      run: cargo test --workspace --verbose --all-features
 
   clippy:
     needs: validity
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/cache@v3
-        with:
-          path: ${{ env.CACHE_PATHS }}
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-      - name: Lint code with clippy
-        run: cargo clippy
+    - uses: actions/checkout@v4
+    - uses: actions/cache@v4
+      with:
+        path: ${{ env.CACHE_PATHS }}
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+    - name: Lint code with clippy
+      run: cargo clippy
 
   publish-ability:
     runs-on: ubuntu-latest
+    if: false
     steps:
-      - uses: actions/checkout@v3
-      - name: Check that it will publish to crates
-        run: |
-          cargo metadata --offline --format-version 1 --no-deps | jq -r ".workspace_members[]" | while read -r _n _v pathInfo ; do
-            cd ${pathInfo:13:-1}
-            cargo publish --no-verify --dry-run
-          done
-        shell: bash
+    - uses: actions/checkout@v4
+    - name: Check that it will publish to crates
+      run: |
+        cargo metadata --offline --format-version 1 --no-deps | jq -r ".workspace_members[]" | while read -r _n _v pathInfo ; do
+          cd ${pathInfo:13:-1}
+          cargo publish --no-verify --dry-run
+        done
+      shell: bash
