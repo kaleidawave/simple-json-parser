@@ -11,6 +11,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     pub type Object = HashMap<String, Value>;
 
     #[derive(Debug)]
+    #[allow(dead_code)]
     pub enum Value {
         Object(Object),
         String(String),

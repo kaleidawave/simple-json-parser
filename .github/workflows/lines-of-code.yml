@@ -1,0 +1,36 @@
+name: Update LOC metrics (lines of code)
+
+on:
+  push:
+    branches: ["main"]
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download scc
+        run: |
+          mkdir scc
+          cd scc
+          gh release download v3.1.0 -R boyter/scc -p '*Linux_x86_64.tar.gz' -O scc.tar.gz
+          tar -xf scc.tar.gz
+          chmod +x scc
+          pwd >> $GITHUB_PATH
+        env:
+          GH_TOKEN: ${{ github.token }}
+          
+      - name: Run update script
+        run: |
+          name="simple-json-parser"
+        
+          lines_of_code=$(scc -c --no-cocomo -f json -i rs lib.rs | jq '.[] | .Code');
+        
+          echo "\`$name\` has $lines_of_code lines of code" >> $GITHUB_STEP_SUMMARY;
+
+          curl \
+            --header "Content-Type: application/json" \
+            --header "X-POST-ACCESS-KEY: ${{ secrets.PROJECTS_POST_ACCESS_KEY }}" \
+            --data "{\"project\":\"$name\",\"language\":\"rust\",\"loc\":$lines_of_code}" \
+            -w "\nUpdated-project: \n" \
+            https://kaleidawave-projectinformation.web.val.run/update-project;

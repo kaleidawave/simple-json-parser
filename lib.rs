@@ -17,9 +17,13 @@ pub enum RootJSONValue<'a> {
 pub enum JSONParseErrorReason {
     ExpectedColon,
     ExpectedEndOfValue,
+    /// Doubles as both closing and ending
     ExpectedBracket,
     ExpectedTrueFalseNull,
     ExpectedValue,
+    ExpectedEndOfMultilineComment,
+    /// Both for string values and keys
+    ExpectedQuote,
 }
 
 #[derive(Debug)]
@@ -53,6 +57,70 @@ pub fn parse<'a>(
     })
 }
 
+enum State {
+    InKey {
+        escaped: bool,
+        start: usize,
+    },
+    Colon,
+    InObject,
+    Comment {
+        start: usize,
+        multiline: bool,
+        last_was_asterisk: bool,
+        hash: bool,
+    },
+    ExpectingValue,
+    StringValue {
+        start: usize,
+        escaped: bool,
+    },
+    NumberValue {
+        start: usize,
+    },
+    TrueFalseNull {
+        start: usize,
+    },
+    EndOfValue,
+}
+
+// TODO always pops from key_chain **unless** we are in an array.
+// TODO there are complications using this in an iterator when we yielding numbers
+fn end_of_value(
+    idx: usize,
+    chr: char,
+    state: &mut State,
+    key_chain: &mut Vec<JSONKey<'_>>,
+) -> Result<(), JSONParseError> {
+    if chr == ',' {
+        if let Some(JSONKey::Index(i)) = key_chain.last_mut() {
+            *i += 1;
+            *state = State::ExpectingValue;
+        } else {
+            key_chain.pop();
+            *state = State::InObject;
+        }
+    } else if let ('}', Some(JSONKey::Slice(..))) = (chr, key_chain.last()) {
+        key_chain.pop();
+    } else if let (']', Some(JSONKey::Index(..))) = (chr, key_chain.last()) {
+        key_chain.pop();
+    } else if let c @ ('/' | '#') = chr {
+        key_chain.pop();
+        *state = State::Comment {
+            last_was_asterisk: false,
+            start: idx,
+            multiline: false,
+            hash: c == '#',
+        };
+    } else if !chr.is_whitespace() {
+        return Err(JSONParseError {
+            at: idx,
+            reason: JSONParseErrorReason::ExpectedEndOfValue,
+        });
+    }
+    Ok(())
+}
+
 /// # Errors
 /// Returns an error if it tries to parse invalid JSON input
 #[allow(clippy::too_many_lines)]
@@ -60,105 +128,42 @@ pub fn parse_with_exit_signal<'a>(
     on: &'a str,
     mut cb: impl for<'b> FnMut(&'b [JSONKey<'a>], RootJSONValue<'a>) -> bool,
 ) -> Result<(), JSONParseError> {
-    enum State {
-        InKey {
-            escaped: bool,
-            start: usize,
-        },
-        Colon,
-        InObject,
-        Comment {
-            start: usize,
-            multiline: bool,
-            last_was_asterisk: bool,
-            hash: bool,
-        },
-        ExpectingValue,
-        None,
-        StringValue {
-            start: usize,
-            escaped: bool,
-        },
-        NumberValue {
-            start: usize,
-        },
-        TrueFalseNull {
-            start: usize,
-        },
-        EndOfValue,
-    }
-
     let chars = on.char_indices();
 
     let mut key_chain = Vec::new();
-    let mut state = State::None;
+    let mut state = State::ExpectingValue;
 
-    for (idx, char) in chars {
-        fn end_of_value(
-            idx: usize,
-            char: char,
-            state: &mut State,
-            key_chain: &mut Vec<JSONKey<'_>>,
-        ) -> Result<(), JSONParseError> {
-            if char == ',' {
-                if let Some(JSONKey::Index(i)) = key_chain.last_mut() {
-                    *i += 1;
-                    *state = State::ExpectingValue;
-                } else {
-                    key_chain.pop();
-                    *state = State::InObject;
-                }
-            } else if let ('}', Some(JSONKey::Slice(..))) = (char, key_chain.last()) {
-                key_chain.pop();
-            } else if let (']', Some(JSONKey::Index(..))) = (char, key_chain.last()) {
-                key_chain.pop();
-            } else if let c @ ('/' | '#') = char {
-                key_chain.pop();
-                *state = State::Comment {
-                    last_was_asterisk: false,
-                    start: idx,
-                    multiline: false,
-                    hash: c == '#',
-                };
-            } else if !char.is_whitespace() {
-                return Err(JSONParseError {
-                    at: idx,
-                    reason: JSONParseErrorReason::ExpectedEndOfValue,
-                });
-            }
-            Ok(())
-        }
-
+    for (idx, chr) in chars {
         match state {
             State::InKey {
                 start,
                 ref mut escaped,
             } => {
-                if !*escaped && char == '"' {
+                if !*escaped && chr == '"' {
                     key_chain.push(JSONKey::Slice(&on[start..idx]));
                     state = State::Colon;
                 } else {
-                    *escaped = char == '\\';
+                    *escaped = chr == '\\';
                 }
             }
             State::StringValue {
                 start,
                 ref mut escaped,
             } => {
-                if !*escaped && char == '"' {
+                if !*escaped && chr == '"' {
                     state = State::EndOfValue;
                     let res = cb(&key_chain, RootJSONValue::String(&on[start..idx]));
                     if res {
                         return Ok(());
                     }
                 } else {
-                    *escaped = char == '\\';
+                    *escaped = chr == '\\';
                 }
             }
             State::Colon => {
-                if char == ':' {
+                if chr == ':' {
                     state = State::ExpectingValue;
-                } else if !char.is_whitespace() {
+                } else if !chr.is_whitespace() {
                     return Err(JSONParseError {
                         at: idx,
                         reason: JSONParseErrorReason::ExpectedColon,
@@ -166,7 +171,7 @@ pub fn parse_with_exit_signal<'a>(
                 }
             }
             State::EndOfValue => {
-                end_of_value(idx, char, &mut state, &mut key_chain)?;
+                end_of_value(idx, chr, &mut state, &mut key_chain)?;
             }
             State::Comment {
                 ref mut last_was_asterisk,
@@ -174,28 +179,28 @@ pub fn parse_with_exit_signal<'a>(
                 hash,
                 start,
             } => {
-                if char == '\n' && !*multiline {
+                if chr == '\n' && !*multiline {
                     if let Some(JSONKey::Index(..)) = key_chain.last() {
                         state = State::ExpectingValue;
                     } else {
                         state = State::InObject;
                     }
-                } else if char == '*' && start + 1 == idx && !hash {
+                } else if chr == '*' && start + 1 == idx && !hash {
                     *multiline = true;
                 } else if *multiline {
-                    if *last_was_asterisk && char == '/' {
+                    if *last_was_asterisk && chr == '/' {
                         if let Some(JSONKey::Index(..)) = key_chain.last() {
                             state = State::ExpectingValue;
                         } else {
                             state = State::InObject;
                         }
                     } else {
-                        *last_was_asterisk = char == '*';
+                        *last_was_asterisk = chr == '*';
                     }
                 }
             }
             State::ExpectingValue => {
-                state = match char {
+                state = match chr {
                     '{' => State::InObject,
                     '[' => {
                         key_chain.push(JSONKey::Index(0));
@@ -213,7 +218,7 @@ pub fn parse_with_exit_signal<'a>(
                     },
                     '0'..='9' | '-' => State::NumberValue { start: idx },
                     't' | 'f' | 'n' => State::TrueFalseNull { start: idx },
-                    char if char.is_whitespace() => state,
+                    chr if chr.is_whitespace() => state,
                     _ => {
                         return Err(JSONParseError {
                             at: idx,
@@ -223,12 +228,12 @@ pub fn parse_with_exit_signal<'a>(
                 }
             }
             State::InObject => {
-                if char == '"' {
+                if chr == '"' {
                     state = State::InKey {
                         escaped: false,
                         start: idx + '"'.len_utf8(),
                     };
-                } else if char == '}' {
+                } else if chr == '}' {
                     if let Some(JSONKey::Index(..)) = key_chain.last() {
                         state = State::ExpectingValue;
                     } else {
@@ -236,25 +241,15 @@ pub fn parse_with_exit_signal<'a>(
                     }
                 }
             }
-            State::None => {
-                if char == '{' {
-                    state = State::InObject;
-                } else if !char.is_whitespace() {
-                    return Err(JSONParseError {
-                        at: idx,
-                        reason: JSONParseErrorReason::ExpectedBracket,
-                    });
-                }
-            }
             State::NumberValue { start } => {
                 // TODO actual number handing
-                if char.is_whitespace() || matches!(char, '}' | ',' | ']') {
+                if chr.is_whitespace() || matches!(chr, '}' | ',' | ']') {
                     let res = cb(&key_chain, RootJSONValue::Number(&on[start..idx]));
                     if res {
                         return Ok(());
                     }
                     state = State::EndOfValue;
-                    end_of_value(idx, char, &mut state, &mut key_chain)?;
+                    end_of_value(idx, chr, &mut state, &mut key_chain)?;
                 }
             }
             State::TrueFalseNull { start } => {
@@ -298,5 +293,47 @@ pub fn parse_with_exit_signal<'a>(
         }
     }
 
-    Ok(())
+    match state {
+        State::InKey { .. } | State::StringValue { .. } => Err(JSONParseError {
+            at: on.len(),
+            reason: JSONParseErrorReason::ExpectedQuote,
+        }),
+        State::Colon => Err(JSONParseError {
+            at: on.len(),
+            reason: JSONParseErrorReason::ExpectedColon,
+        }),
+        State::Comment { multiline, .. } => {
+            if multiline {
+                Ok(())
+            } else {
+                Err(JSONParseError {
+                    at: on.len(),
+                    reason: JSONParseErrorReason::ExpectedEndOfMultilineComment,
+                })
+            }
+        }
+        State::EndOfValue | State::ExpectingValue => {
+            if key_chain.is_empty() {
+                Ok(())
+            } else {
+                Err(JSONParseError {
+                    at: on.len(),
+                    reason: JSONParseErrorReason::ExpectedBracket,
+                })
+            }
+        }
+        State::InObject => Err(JSONParseError {
+            at: on.len(),
+            reason: JSONParseErrorReason::ExpectedBracket,
+        }),
+        State::NumberValue { start } => {
+            // TODO actual number handing
+            let _result = cb(&key_chain, RootJSONValue::Number(&on[start..]));
+            Ok(())
+        }
+        State::TrueFalseNull { start: _ } => Err(JSONParseError {
+            at: on.len(),
+            reason: JSONParseErrorReason::ExpectedTrueFalseNull,
+        }),
+    }
 }

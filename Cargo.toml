@@ -18,4 +18,3 @@ path = "lib.rs"
 
 [lints.clippy]
 pedantic = "deny"
-
