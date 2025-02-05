@@ -176,6 +176,8 @@ pub fn parse_with_exit_signal<'a>(
                     if res {
                         return Ok(idx + chr.len_utf8());
                     }
+                } else if *escaped {
+                    *escaped = false;
                 } else {
                     *escaped = chr == '\\';
                 }
@@ -230,6 +232,17 @@ pub fn parse_with_exit_signal<'a>(
                         key_chain.push(JSONKey::Index(0));
                         State::ExpectingValue
                     }
+                    ']' => {
+                        key_chain.pop();
+                        State::EndOfValue
+                    }
+                    '}' => {
+                        if let Some(JSONKey::Index(..)) = key_chain.pop() {
+                            State::ExpectingValue
+                        } else {
+                            State::InObject
+                        }
+                    }
                     '"' => State::StringValue {
                         start: idx + '"'.len_utf8(),
                         escaped: false,
@@ -247,7 +260,7 @@ pub fn parse_with_exit_signal<'a>(
                         return Err(JSONParseError {
                             at: idx,
                             reason: JSONParseErrorReason::ExpectedValue,
-                        })
+                        });
                     }
                 }
             }
@@ -258,11 +271,7 @@ pub fn parse_with_exit_signal<'a>(
                         start: idx + '"'.len_utf8(),
                     };
                 } else if chr == '}' {
-                    if let Some(JSONKey::Index(..)) = key_chain.last() {
-                        state = State::ExpectingValue;
-                    } else {
-                        state = State::InObject;
-                    }
+                    state = State::EndOfValue;
                 } else if let (true, c @ ('/' | '#')) = (options.allow_comments, chr) {
                     state = State::Comment {
                         last_was_asterisk: false,
