@@ -65,6 +65,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             RootJSONValue::Number(n) => Value::Number(n.to_string()),
             RootJSONValue::Boolean(v) => Value::Boolean(v),
             RootJSONValue::Null => Value::Null,
+            RootJSONValue::Comment(_) | RootJSONValue::Empty => {
+                unreachable!("Comment and empty option should have been turned off")
+            }
         };
         unsafe {
             (to_add_to.as_mut().unwrap()).insert(name, value);

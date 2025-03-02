@@ -1,4 +1,4 @@
-use simple_json_parser::{parse, JSONParseError};
+use simple_json_parser::{parse_advanced, JSONParseError, ParseOptions};
 
 fn main() {
     let base = r#"{
@@ -82,12 +82,25 @@ fn main() {
     }"#;
 
     let content = if let Some(path) = std::env::args().nth(1) {
-        std::fs::read_to_string(path).unwrap()
+        std::borrow::Cow::Owned(std::fs::read_to_string(path).unwrap())
     } else {
-        base.to_owned()
+        std::borrow::Cow::Borrowed(base)
     };
 
-    let result = parse(&content, |keys, value| eprintln!("{keys:?} -> {value:?}"));
+    let partial_syntax = true;
+    let allow_comments = true;
+
+    let options = ParseOptions {
+        partial_syntax,
+        allow_comments,
+        yield_comments: allow_comments,
+        ..Default::default()
+    };
+
+    let result = parse_advanced::<()>(&content, &options, |keys, value| {
+        eprintln!("{keys:?} -> {value:?}");
+        None
+    });
 
     if let Err(JSONParseError { at, reason }) = result {
         eprintln!("{reason:?} @ {at}");

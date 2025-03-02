@@ -1,4 +1,4 @@
-use simple_json_parser::{parse_with_exit_signal, JSONKey, ParseOptions, RootJSONValue};
+use simple_json_parser::{parse_advanced, JSONKey, ParseOptions, RootJSONValue};
 
 #[test]
 fn disable_comments() {
@@ -7,30 +7,30 @@ fn disable_comments() {
         "hi": "Ben"
     }"#;
 
-    let with_comments = parse_with_exit_signal(
+    let with_comments = parse_advanced::<()>(
         source,
+        &ParseOptions {
+            allow_comments: true,
+            ..Default::default()
+        },
         |keys, value| {
             if let &[JSONKey::Slice("hi")] = keys {
                 assert_eq!(value, RootJSONValue::String("Ben"));
             } else {
                 panic!()
             }
-            false
-        },
-        &ParseOptions {
-            allow_comments: true,
-            ..Default::default()
+            None
         },
     );
-    let without_comments = parse_with_exit_signal(
+    let without_comments = parse_advanced::<()>(
         source,
-        |_keys, _value| {
-            eprintln!("{:?}", (_keys, _value));
-            false
-        },
         &ParseOptions {
             allow_comments: false,
             ..Default::default()
+        },
+        |_keys, _value| {
+            eprintln!("{:?}", (_keys, _value));
+            None
         },
     );
 

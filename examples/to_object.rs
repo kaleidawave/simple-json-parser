@@ -35,6 +35,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         RootJSONValue::Number(n) => Value::Number(n.to_string()),
                         RootJSONValue::Boolean(v) => Value::Boolean(v),
                         RootJSONValue::Null => Value::Null,
+                        RootJSONValue::Comment(_) | RootJSONValue::Empty => {
+                            unreachable!("Option should have been turned off")
+                        }
                     };
                     let existing = obj.insert(name, value);
                     debug_assert!(existing.is_none());

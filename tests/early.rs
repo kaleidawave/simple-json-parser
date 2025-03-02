@@ -1,4 +1,4 @@
-use simple_json_parser::{parse_with_exit_signal, JSONKey, ParseOptions, RootJSONValue};
+use simple_json_parser::{parse_advanced, JSONKey, ParseOptions, RootJSONValue};
 
 #[test]
 fn at_end_of_value() {
@@ -10,24 +10,21 @@ fn at_end_of_value() {
         .unwrap();
 
     let mut values = 2;
-    let result = parse_with_exit_signal(
-        source,
-        |keys, value| {
-            values -= 1;
-            if let &[JSONKey::Slice("org")] = keys {
-                assert_eq!(value, RootJSONValue::Number("10"));
-            } else if let &[JSONKey::Slice("items"), JSONKey::Index(0)] = keys {
-                assert_eq!(value, RootJSONValue::String("one"));
-            } else {
-                panic!("Unknown value {keys:?}");
-            }
-            false
-        },
-        &ParseOptions {
-            exit_on_first_value: true,
-            ..Default::default()
-        },
-    )
+    let options = ParseOptions {
+        exit_on_first_value: true,
+        ..Default::default()
+    };
+    let (result, _none) = parse_advanced::<()>(source, &options, |keys, value| {
+        values -= 1;
+        if let &[JSONKey::Slice("org")] = keys {
+            assert_eq!(value, RootJSONValue::Number("10"));
+        } else if let &[JSONKey::Slice("items"), JSONKey::Index(0)] = keys {
+            assert_eq!(value, RootJSONValue::String("one"));
+        } else {
+            panic!("Unknown value {keys:?}");
+        }
+        None
+    })
     .unwrap();
 
     assert_eq!(values, 0);
@@ -40,21 +37,21 @@ fn at_found_value() {
     let source = r#"{"org": 10, "items":[4, { "name": "Ben" }, 6]}"#;
 
     let mut values = 2;
-    let result = parse_with_exit_signal(
-        source,
-        |keys, value| {
+    let (parsed, result) =
+        parse_advanced::<RootJSONValue<'_>>(source, &ParseOptions::default(), |keys, value| {
             if let &[JSONKey::Slice("items"), JSONKey::Index(1), JSONKey::Slice("name")] = keys {
-                assert_eq!(value, RootJSONValue::String("Ben"));
-                true
+                Some(value)
             } else {
                 values -= 1;
-                false
+                None
             }
-        },
-        &ParseOptions::default(),
-    )
-    .unwrap();
+        })
+        .unwrap();
 
+    assert_eq!(
+        result.expect("No found value"),
+        RootJSONValue::String("Ben")
+    );
     assert_eq!(values, 0);
-    assert_eq!(&source[result..], " }, 6]}");
+    assert_eq!(&source[parsed..], " }, 6]}");
 }
