@@ -2,6 +2,9 @@
 
 use std::borrow::Cow;
 
+#[cfg(feature = "extras")]
+pub mod extras;
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum JSONKey<'a> {
     Slice(&'a str),

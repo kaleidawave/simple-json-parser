@@ -1,18 +1,8 @@
 use simple_json_parser::{parse_advanced, ParseOptions};
 
 #[test]
-fn parse_package_json() {
-    let content = r#"{
-    "a": 2,
-    "b": [],
-    "c": 5,
-    "d": {},
-    "e": "",
-    "f": true,
-    "g": 4,
-    "h": "x \\",
-    "i": 7
-}"#;
+fn lots_of_values() {
+    let content = r#"{ "a": 2, "b": [], "c": 5, "d": {}, "e": "", "f": true, "g": 4, "h": "x \\", "i": 7 }"#;
 
     let mut found = 0;
     let result = parse_advanced::<()>(content, &ParseOptions::default(), |_keys, _value| {
