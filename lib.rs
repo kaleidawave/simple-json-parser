@@ -8,6 +8,7 @@ pub enum JSONKey<'a> {
     Index(usize),
 }
 
+/// TODO empty object and array
 #[derive(Debug, PartialEq, Eq)]
 pub enum RootJSONValue<'a> {
     String(&'a str),
@@ -52,7 +53,7 @@ impl std::fmt::Display for JSONParseError {
 }
 
 /// If you want to return early (break on an exception in the callback) or
-/// more configuration use [`parse_advanced`]
+/// more configuration use [`parse_with_options`]
 ///
 /// # Errors
 /// Returns an error if it tries to parse invalid JSON input
@@ -61,22 +62,23 @@ pub fn parse<'a>(
     mut cb: impl for<'b> FnMut(&'b [JSONKey<'a>], RootJSONValue<'a>),
 ) -> Result<usize, JSONParseError> {
     let options = ParseOptions::default();
-    parse_advanced(on, &options, |k, v| {
+    parse_with_options(on, &options, |k, v| {
         cb(k, v);
         None::<()>
     })
     .map(|(parsed, _)| parsed)
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct ParseOptions {
-    pub exit_on_first_value: bool,
     pub allow_trailing_commas: bool,
     pub partial_syntax: bool,
     pub allow_comments: bool,
     // TODO combine with above
     pub yield_comments: bool,
+    // For new line JSON etc
+    pub top_level_separator: Option<&'static str>,
 }
 
 /// The four characters considered by the JSON specification as *whitespace*
@@ -123,7 +125,7 @@ enum State {
 /// # Errors
 /// Returns an error if it tries to parse invalid JSON input
 #[allow(clippy::too_many_lines)]
-pub fn parse_advanced<'a, T>(
+pub fn parse_with_options<'a, T>(
     on: &'a str,
     options: &ParseOptions,
     mut cb: impl for<'b> FnMut(&'b [JSONKey<'a>], RootJSONValue<'a>) -> Option<T>,
@@ -131,6 +133,11 @@ pub fn parse_advanced<'a, T>(
     let chars = on.char_indices();
 
     let mut key_chain = Vec::new();
+
+    if options.top_level_separator.is_some() {
+        key_chain.push(JSONKey::Index(0));
+    }
+
     let mut state = State::ExpectingValue;
 
     for (idx, chr) in chars {
@@ -175,9 +182,22 @@ pub fn parse_advanced<'a, T>(
             State::EndOfValue => {
                 end_of_value(idx, chr, &mut state, &mut key_chain, options.allow_comments)?;
 
-                if options.exit_on_first_value && key_chain.is_empty() && chr != ',' {
-                    return Ok((idx + chr.len_utf8(), None));
+                if let Some(separator) = options.top_level_separator {
+                    if on[idx..].starts_with(separator) {
+                        if let [JSONKey::Index(ref mut idx)] = key_chain[..] {
+                            *idx += 1;
+                        } else {
+                            unreachable!("{key_chain:?} should be empty")
+                        }
+                        state = State::ExpectingValue;
+                    } else {
+                        // TODO can be error
+                    }
                 }
+                // else if key_chain.is_empty() {
+                //     // TODO check rest is empty
+                //     return Ok((idx + chr.len_utf8(), None));
+                // }
             }
             State::Comment {
                 ref mut last_was_asterisk,
@@ -400,9 +420,14 @@ pub fn parse_advanced<'a, T>(
             }
         }
         State::EndOfValue | State::ExpectingValue => {
-            if !key_chain.is_empty() {
+            let okay = match options.top_level_separator {
+                Some(_) => matches!(&key_chain[..], [JSONKey::Index(_)]),
+                None => key_chain.is_empty(),
+            };
+            if !okay {
                 return Err(JSONParseError {
                     at: on.len(),
+                    // TODO might be different based on `options.top_level_separator`
                     reason: JSONParseErrorReason::ExpectedBracket,
                 });
             }
@@ -512,6 +537,24 @@ pub fn unescape_string_content(on: &str) -> Cow<'_, str> {
     let mut start = 0;
     for (index, _matched) in on.match_indices('\\') {
         result += &on[start..index];
+        match on[index + 1..].chars().next() {
+            Some('"' | '\'') => {}
+            Some('t') => {
+                result += "\t";
+            }
+            Some('n') => {
+                result += "\n";
+            }
+            Some('r') => {
+                result += "\r";
+            }
+            Some(chr) => {
+                eprintln!("unexpected item {chr:?}");
+            }
+            None => {
+                eprintln!("end of item?");
+            }
+        }
         start = index + 1;
     }
     result += &on[start..];
