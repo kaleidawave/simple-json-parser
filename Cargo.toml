@@ -16,5 +16,10 @@ repository = "https://github.com/kaleidawave/simple-json-parser"
 [lib]
 path = "lib.rs"
 
+[[test]]
+name = "specification"
+path = "./tests/specification.rs"
+harness = false
+
 [lints.clippy]
 pedantic = "deny"
