@@ -8,13 +8,14 @@ pub enum JSONKey<'a> {
     Index(usize),
 }
 
-/// TODO empty object and array
 #[derive(Debug, PartialEq, Eq)]
 pub enum RootJSONValue<'a> {
     String(&'a str),
     Number(&'a str),
     Boolean(bool),
     Null,
+    EmptyObject,
+    EmptyArray,
     /// Under `yield_comments` these are *sometimes* emitted to preserve formatting
     Comment(&'a str),
     /// For `options.partial_syntax` WIP
@@ -92,6 +93,8 @@ enum State {
     Colon,
     InObject {
         last_was_comma: bool,
+        /// For [`RootJSONValue::Object`]
+        found: bool,
     },
     Comment {
         start: usize,
@@ -101,7 +104,10 @@ enum State {
         /// Whether single-line *hash* style comments: `# comment`
         hash: bool,
     },
-    ExpectingValue,
+    ExpectingValue {
+        /// For [`RootJSONValue::Array`]
+        found: bool,
+    },
     StringValue {
         start: usize,
         escaped: bool,
@@ -138,7 +144,7 @@ pub fn parse_with_options<'a, T>(
         key_chain.push(JSONKey::Index(0));
     }
 
-    let mut state = State::ExpectingValue;
+    let mut state = State::ExpectingValue { found: true };
 
     for (idx, chr) in chars {
         match state {
@@ -171,7 +177,7 @@ pub fn parse_with_options<'a, T>(
             }
             State::Colon => {
                 if chr == ':' {
-                    state = State::ExpectingValue;
+                    state = State::ExpectingValue { found: true };
                 } else if !WHITESPACE.contains(&chr) {
                     return Err(JSONParseError {
                         at: idx,
@@ -186,10 +192,11 @@ pub fn parse_with_options<'a, T>(
                     if on[idx..].starts_with(separator) {
                         if let [JSONKey::Index(ref mut idx)] = key_chain[..] {
                             *idx += 1;
+                            state = State::ExpectingValue { found: true };
                         } else {
-                            unreachable!("{key_chain:?} should be empty")
+                            // this is fine if we have not reached end
+                            // unreachable!("{key_chain:?} should be empty")
                         }
-                        state = State::ExpectingValue;
                     } else {
                         // TODO can be error
                     }
@@ -220,10 +227,11 @@ pub fn parse_with_options<'a, T>(
                         }
                     }
                     if let Some(JSONKey::Index(..)) = key_chain.last() {
-                        state = State::ExpectingValue;
+                        state = State::ExpectingValue { found: true };
                     } else {
                         state = State::InObject {
                             last_was_comma: false,
+                            found: true,
                         };
                     }
                 } else if chr == '*' && start + 1 == idx && !hash {
@@ -232,18 +240,22 @@ pub fn parse_with_options<'a, T>(
                     *last_was_asterisk = chr == '*';
                 }
             }
-            State::ExpectingValue => {
+            State::ExpectingValue { found } => {
                 state = match chr {
                     '[' => {
                         key_chain.push(JSONKey::Index(0));
-                        State::ExpectingValue
+                        State::ExpectingValue { found: false }
                     }
                     ']' => {
                         key_chain.pop();
+                        if !found {
+                            cb(&key_chain, RootJSONValue::EmptyArray);
+                        }
                         State::EndOfValue
                     }
                     '{' => State::InObject {
                         last_was_comma: false,
+                        found: false,
                     },
                     // '}' => {
                     //     if let Some(JSONKey::Index(..)) = key_chain.pop() {
@@ -291,13 +303,16 @@ pub fn parse_with_options<'a, T>(
                     }
                 }
             }
-            State::InObject { last_was_comma } => {
+            State::InObject { last_was_comma, found } => {
                 if chr == '"' {
                     state = State::InKey {
                         escaped: false,
                         start: idx + '"'.len_utf8(),
                     };
                 } else if chr == '}' {
+                    if !found {
+                        cb(&key_chain, RootJSONValue::EmptyObject);
+                    }
                     if last_was_comma && !options.allow_trailing_commas {
                         return Err(JSONParseError {
                             at: idx,
@@ -419,7 +434,7 @@ pub fn parse_with_options<'a, T>(
                 });
             }
         }
-        State::EndOfValue | State::ExpectingValue => {
+        State::EndOfValue | State::ExpectingValue { found: _ } => {
             let okay = match options.top_level_separator {
                 Some(_) => matches!(&key_chain[..], [JSONKey::Index(_)]),
                 None => key_chain.is_empty(),
@@ -465,11 +480,12 @@ fn end_of_value(
     if chr == ',' {
         if let Some(JSONKey::Index(i)) = key_chain.last_mut() {
             *i += 1;
-            *state = State::ExpectingValue;
+            *state = State::ExpectingValue { found: true };
         } else {
             key_chain.pop();
             *state = State::InObject {
                 last_was_comma: true,
+                found: true,
             };
         }
     } else if let ('}', Some(JSONKey::Slice(..))) = (chr, key_chain.last()) {

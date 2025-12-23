@@ -12,3 +12,14 @@ Features
 
 See [examples](/examples/) and [tests](/tests/) for usage.
 
+### TODO
+
+> is there a change to end_of_value on laptop?
+
+- end_of_value: if key chain len 1 and character == new_line_delimeter => State::ExpectingValue
+- end_of_value: do not drop last in array key chain if new_line_delimeter is some
+- parse should handle more flags
+- finish number parsing (lots of `todo`s)
+- test partials
+
+> do all examples work? should some of the implementations be under cfg? maybe extras

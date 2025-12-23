@@ -19,17 +19,33 @@
 > TODO should yield empty objects under option
 
 ```json
-{ "a": 2, "b": [], "c": 5, "d": {}, "e": "", "f": true, "g": 4, "h": "x \\", "i": 7 }
+{ "a": 2, "b": [], "c": 5, "d": {}, "e": "", "f": true, "g": 4, "h": "x", "i": "this is a string" }
 ```
 
 ```
 [Slice("a")] -> Number("2")
+[Slice("b")] -> EmptyArray
 [Slice("c")] -> Number("5")
+[Slice("d")] -> EmptyObject
 [Slice("e")] -> String("")
 [Slice("f")] -> Boolean(true)
 [Slice("g")] -> Number("4")
-[Slice("h")] -> String("x \\\\")
-[Slice("i")] -> Number("7")
+[Slice("h")] -> String("x")
+[Slice("i")] -> String("this is a string")
+```
+
+### String escapes
+
+> TODO
+
+```json
+{
+	"a": "b\n"
+}
+```
+
+```
+[Slice("a")] -> String("b\\n")
 ```
 
 ### Numbers
@@ -115,6 +131,7 @@ JSONParseError { at: 8, reason: ExpectedEndOfValue }
 ```
 
 ```
+[] -> EmptyObject
 JSONParseError { at: 4, reason: ExpectedEndOfValue }
 ```
 
@@ -138,9 +155,38 @@ The following with `top_level_separator = Some("\n")`
 
 ```jsonc
 new-line-separated
+---
 { "x": 2 }
 { "y": 3, "y2": 5 }
 { "z": 4 }
+```
+
+> Note each gets an index
+
+```
+[Index(0), Slice("x")] -> Number("2")
+[Index(1), Slice("y")] -> Number("3")
+[Index(1), Slice("y2")] -> Number("5")
+[Index(2), Slice("z")] -> Number("4")
+```
+
+#### New line separated (2)
+
+The following with `top_level_separator = Some("\n")`
+
+```jsonc
+new-line-separated
+---
+{ 
+	"x": 2
+}
+{ 
+	"y": 3, 
+	"y2": 5 
+}
+{ 
+	"z": 4
+}
 ```
 
 > Note each gets an index
@@ -156,6 +202,7 @@ new-line-separated
 
 ```jsonc
 trailing-commas
+---
 { "x": 2, "a": [1, 2, ], }
 ```
 
@@ -169,6 +216,7 @@ trailing-commas
 
 ```jsonc
 with-comments
+---
 { 
 	"x": 2,
 	// something
@@ -187,4 +235,16 @@ with-comments
 
 #### Partial syntax
 
-#TODO
+```jsonc
+partial
+---
+{ 
+	"x": ,
+	"y": 3
+}
+```
+
+```
+[Slice("x")] -> Empty
+[Slice("y")] -> Number("3")
+```

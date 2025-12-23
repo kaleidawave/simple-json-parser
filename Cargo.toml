@@ -23,3 +23,6 @@ harness = false
 
 [lints.clippy]
 pedantic = "deny"
+
+[package.metadata.commands]
+test = "spectra test specification.md 'cargo run --example parse -q -- --interactive --rpc'"

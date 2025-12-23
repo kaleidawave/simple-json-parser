@@ -11,25 +11,29 @@ static EXAMPLE: &str = r#"
 }"#;
 
 fn main() {
-    let arg = std::env::args().nth(1);
+    let mut args = std::env::args().skip(1);
+
+    let arg = args.next();
 
     if let Some("--interactive") = arg.as_deref() {
         run_interactive();
         return;
     }
 
+    let mut options = ParseOptions::default();
     let source = if let Some("--content") = arg.as_deref() {
         std::env::args().nth(2).expect("no content")
     } else if let Some(path) = arg {
+        if path.ends_with(".jsonl") {
+            options.top_level_separator = Some("\n");
+        } 
         std::fs::read_to_string(path).unwrap()
     } else {
         EXAMPLE.trim_start().to_owned()
     };
 
-    let options = ParseOptions::default();
-
     parse_json::<()>(&source, &options, |keys, value| {
-        eprintln!("{keys:?} -> {value:?}");
+        println!("{keys:?} -> {value:?}");
         None
     })
     .unwrap();
@@ -52,20 +56,31 @@ fn run_interactive() {
 
         if line == "end" {
             let source = String::from_utf8_lossy(&buf);
-            let mut source = source.trim();
+            let source = source.trim();
             let mut options = ParseOptions::default();
-            if let Some(rest) = source.strip_prefix("new-line-separated") {
-                options.top_level_separator = Some("\n");
-                source = rest.trim_start();
-            } else if let Some(rest) = source.strip_prefix("trailing-commas") {
-                options.allow_trailing_commas = true;
-                source = rest.trim_start();
-            } else if let Some(rest) = source.strip_prefix("with-comments") {
-                options.allow_comments = true;
-                source = rest.trim_start();
+
+            let (commands, content) = source.split_once("\n---").unwrap_or(("", &source));
+            for command in commands.lines() {
+                match command {
+                    "new-line-separated" => {
+                        options.top_level_separator = Some("\n");
+                    },
+                    "trailing-commas" => {
+                        options.allow_trailing_commas = true;
+                    },
+                    "with-comments" => {
+                        options.allow_comments = true;
+                    },
+                    "partial" => {
+                        options.partial_syntax = true;
+                    },
+                    command => {
+                        panic!("unknown {command}")
+                    }
+                }
             }
 
-            let result = parse_json::<()>(source, &options, |keys, value| {
+            let result = parse_json::<()>(content, &options, |keys, value| {
                 println!("{keys:?} -> {value:?}");
                 None
             });
