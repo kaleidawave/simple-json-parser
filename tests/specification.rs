@@ -1,6 +1,6 @@
 fn main() -> std::process::ExitCode {
     let output = std::process::Command::new("spectra")
-        .arg("check")
+        .arg("test")
         .arg("./specification.md")
         .arg("./target/debug/examples/parse --rpc --interactive")
         .status()

@@ -226,6 +226,25 @@ with-comments
 
 ```
 [Slice("x")] -> Number("2")
+[] -> Comment(" something")
+[Slice("y")] -> Number("3")
+```
+
+#### Comments (`#` variant)
+
+```jsonc
+with-comments
+---
+{ 
+	"x": 2,
+	# something
+	"y": 3
+}
+```
+
+```
+[Slice("x")] -> Number("2")
+[] -> Comment(" something")
 [Slice("y")] -> Number("3")
 ```
 

@@ -17,26 +17,38 @@ fn main() {
 
     if let Some("--interactive") = arg.as_deref() {
         run_interactive();
-        return;
-    }
-
-    let mut options = ParseOptions::default();
-    let source = if let Some("--content") = arg.as_deref() {
-        std::env::args().nth(2).expect("no content")
-    } else if let Some(path) = arg {
-        if path.ends_with(".jsonl") {
-            options.top_level_separator = Some("\n");
-        } 
-        std::fs::read_to_string(path).unwrap()
     } else {
-        EXAMPLE.trim_start().to_owned()
-    };
+        let mut options = ParseOptions::default();
+        let source = if let Some("--content") = arg.as_deref() {
+            std::env::args().nth(2).expect("no content")
+        } else if let Some(path) = arg {
+            if path.ends_with(".jsonl") {
+                options.top_level_separator = Some("\n");
+            }
+            if path.ends_with(".jsonc") {
+                options.allow_comments = true;
+            }
+            std::fs::read_to_string(path).unwrap()
+        } else {
+            EXAMPLE.trim_start().to_owned()
+        };
+        for arg in args {
+            if arg == "--comments" {
+                options.allow_comments = true;
+                options.yield_comments = true;
+            } else if arg == "--partial" {
+                options.partial_syntax = true;
+            } else {
+                eprintln!("unknown arg {arg:?}");
+            }
+        }
 
-    parse_json::<()>(&source, &options, |keys, value| {
-        println!("{keys:?} -> {value:?}");
-        None
-    })
-    .unwrap();
+        parse_json::<()>(&source, &options, |keys, value| {
+            println!("{keys:?} -> {value:?}");
+            None
+        })
+        .unwrap();
+    }
 }
 
 fn run_interactive() {
@@ -64,16 +76,17 @@ fn run_interactive() {
                 match command {
                     "new-line-separated" => {
                         options.top_level_separator = Some("\n");
-                    },
+                    }
                     "trailing-commas" => {
                         options.allow_trailing_commas = true;
-                    },
+                    }
                     "with-comments" => {
                         options.allow_comments = true;
-                    },
+                        options.yield_comments = true;
+                    }
                     "partial" => {
                         options.partial_syntax = true;
-                    },
+                    }
                     command => {
                         panic!("unknown {command}")
                     }

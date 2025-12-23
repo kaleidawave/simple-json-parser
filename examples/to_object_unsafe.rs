@@ -65,6 +65,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             RootJSONValue::Number(n) => Value::Number(n.to_string()),
             RootJSONValue::Boolean(v) => Value::Boolean(v),
             RootJSONValue::Null => Value::Null,
+            RootJSONValue::EmptyObject | RootJSONValue::EmptyArray => Value::new_empty_object(),
             RootJSONValue::Comment(_) | RootJSONValue::Empty => {
                 unreachable!("Comment and empty option should have been turned off")
             }
