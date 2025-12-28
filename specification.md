@@ -172,7 +172,7 @@ new-line-separated
 
 #### New line separated (2)
 
-The following with `top_level_separator = Some("\n")`
+The following with `top_level_separator = Some('\n')`
 
 ```jsonc
 new-line-separated
