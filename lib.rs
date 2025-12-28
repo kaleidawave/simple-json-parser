@@ -504,26 +504,80 @@ pub fn unescape_string_content(on: &str) -> Cow<'_, str> {
     let mut result = Cow::Borrowed("");
     let mut start = 0;
     for (index, _matched) in on.match_indices('\\') {
+        if index <= start {
+            continue;
+        }
         result += &on[start..index];
-        match on[index + 1..].chars().next() {
-            Some('"' | '\'') => {}
-            Some('t') => {
-                result += "\t";
+        match on[index..][1..].chars().next() {
+            Some('"' | '\\' | '/') => {
+                start = index + 1;
+            }
+            Some('b') => {
+                // backspace
+                result += "\u{08}";
+                start = index + 2;
+            }
+            Some('f') => {
+                // formfeed
+                result += "\u{0c}";
+                start = index + 2;
             }
             Some('n') => {
                 result += "\n";
+                start = index + 2;
             }
             Some('r') => {
                 result += "\r";
+                start = index + 2;
+            }
+            Some('t') => {
+                result += "\t";
+                start = index + 2;
+            }
+            Some('u') => {
+                fn parse_hex(on: &str) -> Result<u32, &str> {
+                    let mut value = 0u32;
+                    for byte in on.bytes() {
+                        value <<= 4; // log2(16) = 4
+                        let code = match byte {
+                            b'0'..=b'9' => u32::from(byte - b'0'),
+                            b'a'..=b'f' => u32::from(byte - b'a') + 10,
+                            b'A'..=b'F' => u32::from(byte - b'A') + 10,
+                            _byte => {
+                                return Err(on);
+                            }
+                        };
+                        value |= code;
+                    }
+                    Ok(value)
+                }
+
+                let unicode_char = on[index..][2..]
+                    .get(0..6)
+                    .and_then(|s| s.strip_prefix('{'))
+                    .and_then(|s| s.strip_suffix('}'))
+                    .and_then(|slice| parse_hex(slice).ok())
+                    .and_then(char::from_u32);
+
+                if let Some(item) = unicode_char {
+                    result.to_mut().push(dbg!(item));
+                    start = index + 8;
+                } else {
+                    start = index;
+                    eprintln!("expected 4 hex digits");
+                }
             }
             Some(chr) => {
+                start = index + 1;
                 eprintln!("unexpected item {chr:?}");
             }
+            // This is unreachable with the results returned
+            // from JSON parsing
             None => {
+                start = index;
                 eprintln!("end of item?");
             }
         }
-        start = index + 1;
     }
     result += &on[start..];
     result
@@ -546,14 +600,33 @@ mod tests {
     }
 
     #[test]
+    fn unescaping_none_no_transform() {
+        // We do no allocate when transformation is not done
+        // assert!(unescape_string_content("No quotes here").is_borrowed());
+        assert!(matches!(unescape_string_content("No quotes here"), Cow::Borrowed(_)));
+    }
+    
+    #[test]
     fn unescaping() {
-        assert!(matches!(
-            unescape_string_content("No quotes here"),
-            Cow::Borrowed(_)
-        ));
         assert_eq!(
             unescape_string_content("Something with \\\"quotes\\\""),
             "Something with \"quotes\""
         );
+        assert_eq!(
+            unescape_string_content("tab\\t and newline\n"),
+            "tab\t and newline\n"
+        );
+        assert_eq!(unescape_string_content("hex\\u{0021}"), "hex!");
+    }
+
+    #[test]
+    fn unescaping_unknown_or_invalid() {
+        assert_eq!(unescape_string_content("not \\an escape"), "not an escape");
+        assert_eq!(unescape_string_content("not \\u{34} escape"), "not \\u{34} escape");
+    }
+
+    #[test]
+    fn unescaping_end() {
+        assert_eq!(unescape_string_content("ends with \\"), "ends with \\");
     }
 }
