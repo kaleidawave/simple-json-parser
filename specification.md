@@ -124,7 +124,7 @@ JSONParseError { at: 10, reason: ExpectedKey }
 JSONParseError { at: 8, reason: ExpectedEndOfValue }
 ```
 
-### Mismatched delimters 1
+### Mismatched delimiters (1)
 
 ```json
 { } }
@@ -135,7 +135,7 @@ JSONParseError { at: 8, reason: ExpectedEndOfValue }
 JSONParseError { at: 4, reason: ExpectedEndOfValue }
 ```
 
-### Mismatched delimters 2
+### Mismatched delimiters (2)
 
 ```json
 { ]
@@ -143,6 +143,16 @@ JSONParseError { at: 4, reason: ExpectedEndOfValue }
 
 ```
 JSONParseError { at: 2, reason: ExpectedKey }
+```
+
+### Mismatched delimiters (3)
+
+```json
+[ }
+```
+
+```
+JSONParseError { at: 2, reason: ExpectedValue }
 ```
 
 ### Configuration
@@ -169,10 +179,6 @@ new-line-separated
 [Index(1), Slice("y2")] -> Number("5")
 [Index(2), Slice("z")] -> Number("4")
 ```
-
-#### New line separated (2)
-
-The following with `top_level_separator = Some('\n')`
 
 ```jsonc
 new-line-separated
@@ -230,7 +236,7 @@ with-comments
 [Slice("y")] -> Number("3")
 ```
 
-#### Comments (`#` variant)
+#### Comments (has variant)
 
 ```jsonc
 with-comments
@@ -245,6 +251,26 @@ with-comments
 ```
 [Slice("x")] -> Number("2")
 [] -> Comment(" something")
+[Slice("y")] -> Number("3")
+```
+
+#### Comments (multiline variant)
+
+```jsonc
+with-comments
+---
+{ 
+	"x": 2, /*
+here
+on another line
+*/
+	"y": 3
+}
+```
+
+```
+[Slice("x")] -> Number("2")
+[] -> Comment("\nhere\non another line\n")
 [Slice("y")] -> Number("3")
 ```
 

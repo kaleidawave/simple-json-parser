@@ -6,7 +6,7 @@ fn main() {
 { "z": 4 }"#;
 
     let options = ParseOptions {
-        top_level_separator: Some("\n"),
+        top_level_separator: Some('\n'),
         ..Default::default()
     };
 

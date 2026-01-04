@@ -2,11 +2,20 @@
 
 use std::borrow::Cow;
 
+/// A identifier into JSON
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum JSONKey<'a> {
+    /// From `"x": ..`
     Slice(&'a str),
+    /// From `[..]`
     Index(usize),
 }
+
+// #[derive(Debug, PartialEq, Eq)]
+// pub struct JSONString<'a>(&'a str);
+
+// #[derive(Debug, PartialEq, Eq)]
+// pub struct JSONNumber<'a>(&'a str);
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum RootJSONValue<'a> {
@@ -16,23 +25,24 @@ pub enum RootJSONValue<'a> {
     Null,
     EmptyObject,
     EmptyArray,
-    /// Under `yield_comments` these are *sometimes* emitted to preserve formatting
+    /// Under `yield_comments` these are *sometimes* emitted as to preserve
+    /// information during formatting
     Comment(&'a str),
     /// For `options.partial_syntax` WIP
     Empty,
 }
 
+// TODO are all of these used?
 #[derive(Debug)]
 pub enum JSONParseErrorReason {
     ExpectedColon,
     ExpectedEndOfValue,
-    ExpectedEndOfKey,
     /// Doubles as both closing and ending
     ExpectedBracket,
-    ExpectedTrueFalseNull,
     ExpectedKey,
     ExpectedValue,
     ExpectedEndOfMultilineComment,
+    InvalidComment,
     /// Both for string values and keys
     ExpectedQuote,
 }
@@ -80,384 +90,258 @@ pub struct ParseOptions {
     // TODO combine with above
     pub yield_comments: bool,
     // For new line JSON etc
-    pub top_level_separator: Option<&'static str>,
+    pub top_level_separator: Option<char>,
+    // pub top_level_separator: Option<&'static str>,
 }
 
-/// The four characters considered by the JSON specification as *whitespace*
-// const WHITESPACE: [char; 4] = [' ', '\t', '\r', '\n'];
-const WHITESPACE: [u8; 4] = [b' ', b'\t', b'\r', b'\n'];
-
-enum State {
-    Key,
-    Colon,
-    InObject {
-        last_was_comma: bool,
-        /// For [`RootJSONValue::Object`]
-        found: bool,
-    },
-    Comment,
-    ExpectingValue {
-        /// For [`RootJSONValue::Array`]
-        found: bool,
-    },
-    EndOfValue,
-}
-
-#[allow(clippy::manual_find)]
-fn find_non_escaped(on: &str) -> Option<usize> {
-    for (idx, _) in on.match_indices('"') {
-        if !on[..idx].ends_with('\\') {
-            return Some(idx);
-        }
-    }
-    None
-}
-
-/// Returns the number of bytes parsed.
-/// `exit_on_first_value` returns once the first object has been parsed.
+/// Returns the number of bytes parsed
 ///
 /// # Errors
 /// Returns an error if it tries to parse invalid JSON input
-#[allow(clippy::too_many_lines)]
 pub fn parse_with_options<'a, T>(
     on: &'a str,
     options: &ParseOptions,
     mut cb: impl for<'b> FnMut(&'b [JSONKey<'a>], RootJSONValue<'a>) -> Option<T>,
 ) -> Result<(usize, Option<T>), JSONParseError> {
-    let mut key_chain = Vec::new();
+    /// The four characters considered by the JSON specification as *whitespace*
+    const WHITESPACE: [u8; 4] = [b' ', b'\t', b'\r', b'\n'];
 
-    if options.top_level_separator.is_some() {
+    fn find_non_escaped_quoted(on: &str) -> Option<usize> {
+        on.match_indices('"')
+            .map(|(idx, _)| idx)
+            .find(|&idx| !on[..idx].ends_with('\\'))
+    }
+
+    fn parse_comment(on: &str) -> Option<(&str, usize)> {
+        if on.starts_with('#') {
+            let offset = on.find('\n').unwrap_or(on.len());
+            Some((&on[..offset][1..], offset))
+        } else if on.starts_with("//") {
+            let offset = on.find('\n').unwrap_or(on.len());
+            Some((&on[..offset][2..], offset))
+        } else if let Some(rest) = on.strip_prefix("/*") {
+            let offset = rest.find("*/")?;
+            Some((&rest[..offset], offset + 4))
+        } else {
+            None
+        }
+    }
+
+    let mut idx = 0;
+    let mut key_chain = Vec::new();
+    let mut in_object = false;
+    let bytes = on.as_bytes();
+    let tls = options.top_level_separator;
+
+    if tls.is_some() {
         key_chain.push(JSONKey::Index(0));
     }
 
-    let mut state = State::ExpectingValue { found: true };
+    macro_rules! emit {
+        ($item:expr) => {
+            // TODO pass idx
+            let res = cb(&key_chain, $item);
+            if res.is_some() {
+                return Ok((idx, res));
+            }
+        };
+    }
 
-    let mut idx = 0;
-    while idx < on.len() {
-        match state {
-            State::Key => {
-                let rest = &on[idx..];
-                let Some(offset) = find_non_escaped(rest) else {
-                    return Err(JSONParseError {
-                        at: idx,
-                        reason: JSONParseErrorReason::ExpectedEndOfKey,
-                    });
+    macro_rules! return_err {
+        ($reason:ident) => {
+            return Err(JSONParseError {
+                at: idx,
+                reason: JSONParseErrorReason::$reason,
+            });
+        };
+    }
+
+    macro_rules! skip_whitespace_find_comments {
+        () => {
+            while let Some(byte) = bytes.get(idx) {
+                if WHITESPACE.contains(&byte) {
+                    idx += 1;
+                } else if let b'/' | b'#' = byte {
+                    let Some((comment, offset)) = parse_comment(&on[idx..]) else {
+                        return_err!(InvalidComment);
+                    };
+                    if options.yield_comments {
+                        emit!(RootJSONValue::Comment(comment));
+                    }
+                    idx += offset;
+                } else {
+                    break;
+                }
+            }
+        };
+    }
+
+    skip_whitespace_find_comments!();
+
+    while idx < bytes.len() {
+        if in_object {
+            skip_whitespace_find_comments!();
+            let byte = bytes.get(idx).copied().unwrap_or(0);
+            if byte == b'"' {
+                let rest = &on[1..][idx..];
+                let Some(offset) = find_non_escaped_quoted(rest) else {
+                    return_err!(ExpectedQuote);
                 };
                 key_chain.push(JSONKey::Slice(&rest[..offset]));
-                state = State::Colon;
-                idx += offset + 1;
-            }
-            State::Colon => {
-                let slice = on.as_bytes();
-                let chr = slice[idx];
-                if chr == b':' {
-                    state = State::ExpectingValue { found: true };
-                    idx += 1;
-                } else if WHITESPACE.contains(&chr) {
+                idx += offset + 2;
+                skip_whitespace_find_comments!();
+                if let Some(b':') = on.as_bytes().get(idx) {
                     idx += 1;
                 } else {
                     // TODO partial could find next ':'?
-                    return Err(JSONParseError {
-                        at: idx,
-                        reason: JSONParseErrorReason::ExpectedColon,
-                    });
+                    return_err!(ExpectedColon);
+                }
+            } else {
+                return_err!(ExpectedKey);
+            }
+        }
+
+        skip_whitespace_find_comments!();
+
+        // TODO unwrap_or to option
+        match bytes.get(idx).copied().unwrap_or(0) {
+            b'{' => {
+                idx += 1;
+                // little hack
+                skip_whitespace_find_comments!();
+                if let Some(b'}') = bytes.get(idx) {
+                    emit!(RootJSONValue::EmptyObject);
+                    idx += 1;
+                } else {
+                    in_object = true;
+                    continue;
                 }
             }
-            State::EndOfValue => {
-                let slice = on.as_bytes();
-                let byte = slice[idx];
-                match byte {
-                    b',' => {
-                        idx += 1;
-                        if let Some(JSONKey::Index(i)) = key_chain.last_mut() {
-                            *i += 1;
-                            state = State::ExpectingValue { found: true };
-                        } else {
-                            key_chain.pop();
-                            state = State::InObject {
-                                last_was_comma: true,
-                                found: true,
-                            };
-                        }
+            b'[' => {
+                idx += 1;
+                key_chain.push(JSONKey::Index(0));
+                in_object = false;
+                continue;
+            }
+            b']' => {
+                idx += 1;
+                match key_chain.pop() {
+                    Some(JSONKey::Index(0)) => {
+                        emit!(RootJSONValue::EmptyArray);
                     }
-                    b'}' if matches!(key_chain.last(), Some(JSONKey::Slice(_))) => {
-                        idx += 1;
-                        key_chain.pop();
-                    }
-                    b']' if matches!(key_chain.last(), Some(JSONKey::Index(_))) => {
-                        idx += 1;
-                        key_chain.pop();
-                    }
-                    b'/' | b'#' => {
-                        state = State::Comment;
-                    }
-                    byte if WHITESPACE.contains(&byte) => {
-                        idx += 1;
-                    }
+                    // TODO trailing comma
+                    Some(JSONKey::Index(_)) if options.allow_trailing_commas => {}
                     _ => {
-                        dbg!(&on[idx..]);
-                        return Err(JSONParseError {
-                            at: idx,
-                            reason: JSONParseErrorReason::ExpectedEndOfValue,
-                        });
+                        return_err!(ExpectedEndOfValue);
                     }
+                }
+                in_object = matches!(key_chain.last(), Some(JSONKey::Slice(_)));
+            }
+            b'"' => {
+                let rest = &on[idx..][1..];
+                let Some(offset) = find_non_escaped_quoted(rest) else {
+                    return_err!(ExpectedEndOfValue);
+                };
+                idx += offset + 2;
+                emit!(RootJSONValue::String(&rest[..offset]));
+            }
+            b'0'..=b'9' | b'-' => {
+                fn find_non_number(chr: char) -> bool {
+                    !matches!(chr, '0'..='9' | '.' | 'e' | 'E' | '+' | '-')
                 }
 
-                if let Some(separator) = options.top_level_separator {
-                    if on[idx..].starts_with(separator) {
-                        if let [JSONKey::Index(ref mut idx)] = key_chain[..] {
-                            *idx += 1;
-                            state = State::ExpectingValue { found: true };
-                        } else {
-                            // this is fine if we have not reached end
-                            // unreachable!("{key_chain:?} should be empty")
-                        }
-                    } else {
-                        // TODO can be error
-                    }
-                }
-            }
-            State::Comment => {
                 let rest = &on[idx..];
-                if rest.starts_with('#') {
-                    let offset = rest.find('\n').unwrap_or(rest.len());
-                    idx += offset;
-                    if options.yield_comments {
-                        let res = cb(&key_chain, RootJSONValue::Comment(&rest[..offset][1..]));
-                        if res.is_some() {
-                            return Ok((idx, res));
-                        }
-                    }
-                } else if rest.starts_with("//") {
-                    let offset = rest.find('\n').unwrap_or(rest.len());
-                    idx += offset;
-                    if options.yield_comments {
-                        let res = cb(&key_chain, RootJSONValue::Comment(&rest[..offset][2..]));
-                        if res.is_some() {
-                            return Ok((idx, res));
-                        }
-                    }
-                } else if rest.starts_with("*/") {
-                    let Some(offset) = rest.find("*/") else {
-                        return Err(JSONParseError {
-                            at: idx,
-                            reason: JSONParseErrorReason::ExpectedEndOfMultilineComment,
-                        });
-                    };
-                    idx += offset + 2;
-                    if options.yield_comments {
-                        let res = cb(&key_chain, RootJSONValue::Comment(&rest[..offset][2..]));
-                        if res.is_some() {
-                            return Ok((idx, res));
-                        }
-                    }
-                } else {
-                    return Err(JSONParseError {
-                        at: idx,
-                        reason: JSONParseErrorReason::ExpectedKey,
-                    });
+                let Some(offset) = rest.find(find_non_number) else {
+                    return_err!(ExpectedEndOfValue);
+                };
+                // I think it is fine to delegate parsing to the user
+                emit!(RootJSONValue::Number(&rest[..offset]));
+                idx += offset;
+            }
+            b't' if on[idx..].starts_with("true") => {
+                idx += 4;
+                emit!(RootJSONValue::Boolean(true));
+            }
+            b'f' if on[idx..].starts_with("false") => {
+                idx += 5;
+                emit!(RootJSONValue::Boolean(false));
+            }
+            b'n' if on[idx..].starts_with("null") => {
+                idx += 4;
+                emit!(RootJSONValue::Null);
+            }
+            b @ (b',' | b'}') if options.partial_syntax => {
+                emit!(RootJSONValue::Empty);
+                idx += 1;
+                if in_object {
+                    let _ = key_chain.pop();
                 }
-                if let Some(JSONKey::Index(..)) = key_chain.last() {
-                    state = State::ExpectingValue { found: true };
-                } else {
-                    state = State::InObject {
-                        last_was_comma: false,
-                        found: true,
-                    };
+                if b == b',' {
+                    continue;
                 }
             }
-            State::ExpectingValue { found } => {
-                let slice = on.as_bytes();
-                let byte = slice[idx];
-                state = match byte {
-                    b'[' => {
-                        idx += 1;
-                        key_chain.push(JSONKey::Index(0));
-                        State::ExpectingValue { found: false }
-                    }
-                    b']' => {
-                        idx += 1;
+            _ => {
+                return_err!(ExpectedValue);
+            }
+        }
+
+        while let Some(byte) = bytes.get(idx) {
+            if tls.is_some_and(|c: char| on[idx..].starts_with(c)) {
+                idx += 1;
+                if let [JSONKey::Index(ref mut idx)] = key_chain.as_mut_slice() {
+                    *idx += 1;
+                    break;
+                }
+            } else if WHITESPACE.contains(byte) {
+                idx += 1;
+            } else if let b'/' | b'#' = byte {
+                let Some((comment, offset)) = parse_comment(&on[idx..]) else {
+                    return_err!(InvalidComment);
+                };
+                if options.yield_comments {
+                    emit!(RootJSONValue::Comment(comment));
+                }
+                idx += offset;
+            } else {
+                let new_byte = if *byte == b',' {
+                    idx += 1;
+                    if let Some(JSONKey::Index(ref mut idx)) = key_chain.last_mut() {
+                        *idx += 1;
+                    } else {
                         key_chain.pop();
-                        if !found {
-                            cb(&key_chain, RootJSONValue::EmptyArray);
-                        }
-                        State::EndOfValue
                     }
-                    b'{' => {
-                        idx += 1;
-                        State::InObject {
-                            last_was_comma: false,
-                            found: false,
-                        }
+                    if !options.allow_trailing_commas {
+                        break;
                     }
-                    b'/' | b'#' if options.allow_comments => State::Comment,
-                    b'"' => {
-                        idx += 1;
-                        let rest = &on[idx..];
-                        let Some(offset) = find_non_escaped(rest) else {
-                            return Err(JSONParseError {
-                                at: idx,
-                                reason: JSONParseErrorReason::ExpectedEndOfValue,
-                            });
-                        };
-                        let res = cb(&key_chain, RootJSONValue::String(&rest[..offset]));
-                        idx += offset + 1;
-                        if res.is_some() {
-                            return Ok((idx, res));
-                        }
-                        State::EndOfValue
+                    skip_whitespace_find_comments!();
+                    if let Some(b @ (b'}' | b']')) = bytes.get(idx) {
+                        *b
+                    } else {
+                        break;
                     }
-                    b'0'..=b'9' | b'-' => {
-                        fn find_non_number(chr: char) -> bool {
-                            !matches!(chr, '0'..='9' | '.' | 'e' | 'E' | '+' | '-')
-                        }
-                        // TODO delegate somewhere
-                        let rest = &on[idx..];
-
-                        let Some(offset) = rest.find(find_non_number) else {
-                            return Err(JSONParseError {
-                                at: idx,
-                                reason: JSONParseErrorReason::ExpectedEndOfValue,
-                            });
-                        };
-                        idx += offset;
-
-                        // I think this is fine
-                        let res = cb(&key_chain, RootJSONValue::Number(&rest[..offset]));
-                        if res.is_some() {
-                            return Ok((idx, res));
-                        }
-                        State::EndOfValue
-                    }
-                    b't' if on[idx..].starts_with("true") => {
-                        idx += 4;
-                        let res = cb(&key_chain, RootJSONValue::Boolean(true));
-                        if res.is_some() {
-                            return Ok((idx, res));
-                        }
-                        State::EndOfValue
-                    }
-                    b'f' if on[idx..].starts_with("false") => {
-                        idx += 5;
-                        let res = cb(&key_chain, RootJSONValue::Boolean(false));
-                        if res.is_some() {
-                            return Ok((idx, res));
-                        }
-                        State::EndOfValue
-                    }
-                    b'n' if on[idx..].starts_with("null") => {
-                        idx += 4;
-                        let res = cb(&key_chain, RootJSONValue::Null);
-                        if res.is_some() {
-                            return Ok((idx, res));
-                        }
-                        State::EndOfValue
-                    }
-                    b',' | b'}' if options.partial_syntax => {
-                        idx += 1;
-                        let res = cb(&key_chain, RootJSONValue::Empty);
-                        let _ = key_chain.pop();
-                        if res.is_some() {
-                            return Ok((idx, res));
-                        }
-                        State::InObject {
-                            last_was_comma: byte == b',',
-                            found: false,
-                        }
-                    }
-                    byte if WHITESPACE.contains(&byte) => {
-                        idx += 1;
-                        state
-                    }
+                } else {
+                    *byte
+                };
+                // TODO JSONKey::delimeter?
+                match new_byte {
+                    b'}' if *byte == b','
+                        || matches!(key_chain.last(), Some(JSONKey::Slice(_))) => {}
+                    b']' if matches!(key_chain.last(), Some(JSONKey::Index(_))) => {}
                     _ => {
-                        return Err(JSONParseError {
-                            at: idx,
-                            reason: JSONParseErrorReason::ExpectedValue,
-                        });
+                        return_err!(ExpectedEndOfValue);
                     }
                 }
-            }
-            State::InObject {
-                last_was_comma,
-                found,
-            } => {
-                let slice = on.as_bytes();
-                let byte = slice[idx];
-                match byte {
-                    b'"' => {
-                        idx += 1;
-                        state = State::Key;
-                    }
-                    b'}' => {
-                        if last_was_comma && !options.allow_trailing_commas {
-                            return Err(JSONParseError {
-                                at: idx,
-                                reason: JSONParseErrorReason::ExpectedKey,
-                            });
-                        }
-                        idx += 1;
-                        if !found {
-                            cb(&key_chain, RootJSONValue::EmptyObject);
-                        }
-                        state = State::EndOfValue;
-                    }
-                    b'/' | b'#' if options.allow_comments => {
-                        state = State::Comment;
-                    }
-                    byte if WHITESPACE.contains(&byte) => {
-                        idx += 1;
-                    }
-                    _ => {
-                        dbg!(&on[idx - 1..]);
-                        dbg!(&on[idx..]);
-                        return Err(JSONParseError {
-                            at: idx,
-                            reason: JSONParseErrorReason::ExpectedKey,
-                        });
-                    }
-                }
+                idx += 1;
+                key_chain.pop();
+                in_object = matches!(key_chain.last(), Some(JSONKey::Slice(_)));
             }
         }
     }
 
-    match state {
-        State::Key => {
-            return Err(JSONParseError {
-                at: on.len(),
-                reason: JSONParseErrorReason::ExpectedQuote,
-            })
-        }
-        State::Colon => {
-            return Err(JSONParseError {
-                at: on.len(),
-                reason: JSONParseErrorReason::ExpectedColon,
-            });
-        }
-        State::Comment => {
-            return Err(JSONParseError {
-                at: on.len(),
-                reason: JSONParseErrorReason::ExpectedEndOfMultilineComment,
-            });
-        }
-        State::EndOfValue | State::ExpectingValue { found: _ } => {
-            let okay = match options.top_level_separator {
-                Some(_) => matches!(&key_chain[..], [JSONKey::Index(_)]),
-                None => key_chain.is_empty(),
-            };
-            if !okay {
-                return Err(JSONParseError {
-                    at: on.len(),
-                    // TODO might be different based on `options.top_level_separator`
-                    reason: JSONParseErrorReason::ExpectedBracket,
-                });
-            }
-        }
-        State::InObject { .. } => {
-            return Err(JSONParseError {
-                at: on.len(),
-                reason: JSONParseErrorReason::ExpectedBracket,
-            });
-        }
+    let tl = tls.is_some_and(|_| matches!(key_chain.as_slice(), &[JSONKey::Index(_)]));
+
+    if !(key_chain.is_empty() || tl) {
+        return_err!(ExpectedBracket);
     }
 
     Ok((on.len(), None))
@@ -603,9 +487,12 @@ mod tests {
     fn unescaping_none_no_transform() {
         // We do no allocate when transformation is not done
         // assert!(unescape_string_content("No quotes here").is_borrowed());
-        assert!(matches!(unescape_string_content("No quotes here"), Cow::Borrowed(_)));
+        assert!(matches!(
+            unescape_string_content("No quotes here"),
+            Cow::Borrowed(_)
+        ));
     }
-    
+
     #[test]
     fn unescaping() {
         assert_eq!(
@@ -622,7 +509,10 @@ mod tests {
     #[test]
     fn unescaping_unknown_or_invalid() {
         assert_eq!(unescape_string_content("not \\an escape"), "not an escape");
-        assert_eq!(unescape_string_content("not \\u{34} escape"), "not \\u{34} escape");
+        assert_eq!(
+            unescape_string_content("not \\u{34} escape"),
+            "not \\u{34} escape"
+        );
     }
 
     #[test]

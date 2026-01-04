@@ -25,4 +25,6 @@ harness = false
 pedantic = "deny"
 
 [package.metadata.commands]
+parse-aaa = "cargo run --example parse -q private/corpus/aaa.json"
+parse-all = "cargo run --example parse -q private/corpus/all.json"
 test = "spectra test specification.md 'cargo run --example parse -q -- --interactive --rpc'"

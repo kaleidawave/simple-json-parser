@@ -6,7 +6,7 @@ static EXAMPLE: &str = r#"
     "parser": {
         "name": "json",
         "public": false,
-        "features": ["trailing comma"]
+        "features": ["comments"]
     }
 }"#;
 
@@ -23,7 +23,8 @@ fn main() {
             std::env::args().nth(2).expect("no content")
         } else if let Some(path) = arg {
             if path.ends_with(".jsonl") {
-                options.top_level_separator = Some("\n");
+                options.top_level_separator = Some('\n');
+                // options.top_level_separator = Some("\n");
             }
             if path.ends_with(".jsonc") {
                 options.allow_comments = true;
@@ -38,16 +39,26 @@ fn main() {
                 options.yield_comments = true;
             } else if arg == "--partial" {
                 options.partial_syntax = true;
+            } else if arg == "--trailing" {
+                options.allow_trailing_commas = true;
             } else {
                 eprintln!("unknown arg {arg:?}");
             }
         }
 
-        parse_json::<()>(&source, &options, |keys, value| {
+        let result = parse_json::<()>(&source, &options, |keys, value| {
             println!("{keys:?} -> {value:?}");
             None
-        })
-        .unwrap();
+        });
+        if let Err(err) = result {
+            let on = &source[err.at..];
+            let reason = err.reason;
+            if let Some(on) = on.get(0..10) {
+                println!("error at '{on}...', reason {reason:?}");
+            } else {
+                println!("error at '{on}', reason {reason:?}");
+            }
+        }
     }
 }
 
@@ -75,7 +86,8 @@ fn run_interactive() {
             for command in commands.lines() {
                 match command {
                     "new-line-separated" => {
-                        options.top_level_separator = Some("\n");
+                        options.top_level_separator = Some('\n');
+                        // options.top_level_separator = Some("\n");
                     }
                     "trailing-commas" => {
                         options.allow_trailing_commas = true;

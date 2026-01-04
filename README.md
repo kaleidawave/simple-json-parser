@@ -16,9 +16,9 @@ See [examples](/examples/) and [tests](/tests/) for usage.
 
 ### TODO
 
-- parse should handle more flags
-- number parsing
+- number parsing?
 - string and number wrappers
-- test partials
+- test for partial parsing
+- move the to-object file, as a module under `feature=extra`
 
 > do all examples work? should some of the implementations be under cfg? maybe extras
