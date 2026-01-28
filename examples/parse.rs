@@ -50,13 +50,23 @@ fn main() {
             println!("{keys:?} -> {value:?}");
             None
         });
-        if let Err(err) = result {
-            let on = &source[err.at..];
-            let reason = err.reason;
-            if let Some(on) = on.get(0..10) {
-                println!("error at '{on}...', reason {reason:?}");
-            } else {
-                println!("error at '{on}', reason {reason:?}");
+
+        match result {
+            Ok((bytes, value)) => {
+                if bytes != source.len() {
+                    let rest = &source[bytes..];
+                    if !rest.trim().is_empty() {
+                        let item = Limit::new(rest);
+                        let value = With::new(value);
+                        println!("completed before end of source {item}{value:?}");
+                    }
+                }
+            }
+            Err(err) => {
+                let rest = &source[err.at..];
+                let reason = err.reason;
+                let item = Limit::new(rest);
+                println!("error at {item}, reason {reason:?}");
             }
         }
     }
@@ -82,7 +92,7 @@ fn run_interactive() {
             let source = source.trim();
             let mut options = ParseOptions::default();
 
-            let (commands, content) = source.split_once("\n---").unwrap_or(("", &source));
+            let (commands, source) = source.split_once("\n---").unwrap_or(("", &source));
             for command in commands.lines() {
                 match command {
                     "new-line-separated" => {
@@ -105,16 +115,49 @@ fn run_interactive() {
                 }
             }
 
-            let result = parse_json::<()>(content, &options, |keys, value| {
-                println!("{keys:?} -> {value:?}");
-                None
+            let result = parse_json::<&str>(source, &options, |keys, value| {
+                use simple_json_parser::RootJSONValue;
+
+                if matches!(value, RootJSONValue::String(value) if value.raw() == "EARLY RETURN") {
+                    Some("returned early")
+                } else {
+                    print!("{keys:?} -> ");
+                    match value {
+                        RootJSONValue::String(value) => {
+                            print!("String({value:?})", value = value.value())
+                        }
+                        RootJSONValue::Number(value) => {
+                            print!("Number({value})", value = value.value_unwrap())
+                        }
+                        RootJSONValue::Boolean(value) => print!("Boolean({value:?})"),
+                        RootJSONValue::Null => print!("Null"),
+                        RootJSONValue::EmptyObject => print!("EmptyObject"),
+                        RootJSONValue::EmptyArray => print!("EmptyArray"),
+                        RootJSONValue::Comment(comment) => print!("Comment({comment:?})"),
+                        RootJSONValue::Empty => print!("Empty"),
+                    }
+                    println!();
+                    None
+                }
             });
-            if let Err(err) = result {
-                println!("{err:?}");
+            match result {
+                Ok((bytes, value)) => {
+                    if bytes != source.len() {
+                        let rest = &source[bytes..];
+                        if !rest.trim().is_empty() {
+                            let item = Limit::new(rest);
+                            let value = With::new(value);
+                            println!("completed before end of source {item}{value:?}");
+                        }
+                    }
+                }
+                Err(err) => {
+                    let rest = &source[err.at..];
+                    let reason = err.reason;
+                    let item = Limit::new(rest);
+                    println!("error at {item}, reason {reason:?}");
+                }
             }
-            // if let Ok((len, _)) = result {
-            //     println!("{item:?}", item=&source[..len]);
-            // }
             println!("end");
             buf.clear();
             continue;
@@ -122,5 +165,45 @@ fn run_interactive() {
 
         buf.extend_from_slice(line.as_bytes());
         buf.push(b'\n');
+    }
+}
+
+struct Limit<'a>(&'a str);
+
+impl<'a> Limit<'a> {
+    pub fn new(on: &'a str) -> Self {
+        Self(on)
+    }
+}
+
+impl<'a> std::fmt::Display for Limit<'a> {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // TODO customisable
+        const LIMIT: usize = 10;
+
+        let on = self.0;
+        if let Some(on) = on.get(..LIMIT) {
+            write!(fmt, "{on:?}...")
+        } else {
+            write!(fmt, "{on:?}")
+        }
+    }
+}
+
+struct With<T>(Option<T>);
+
+impl<T> With<T> {
+    pub fn new(on: Option<T>) -> Self {
+        Self(on)
+    }
+}
+
+impl<T: std::fmt::Debug> std::fmt::Debug for With<T> {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(on) = &self.0 {
+            write!(fmt, " with {on:?}")
+        } else {
+            Ok(())
+        }
     }
 }

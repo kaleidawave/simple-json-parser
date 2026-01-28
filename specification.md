@@ -10,33 +10,29 @@
 ```
 
 ```
-[Slice("a")] -> Number("78")
-[Slice("b")] -> Number("26")
+[Slice("a")] -> Number(78)
+[Slice("b")] -> Number(26)
 ```
 
 ### More values
-
-> TODO should yield empty objects under option
 
 ```json
 { "a": 2, "b": [], "c": 5, "d": {}, "e": "", "f": true, "g": 4, "h": "x", "i": "this is a string" }
 ```
 
 ```
-[Slice("a")] -> Number("2")
+[Slice("a")] -> Number(2)
 [Slice("b")] -> EmptyArray
-[Slice("c")] -> Number("5")
+[Slice("c")] -> Number(5)
 [Slice("d")] -> EmptyObject
 [Slice("e")] -> String("")
 [Slice("f")] -> Boolean(true)
-[Slice("g")] -> Number("4")
+[Slice("g")] -> Number(4)
 [Slice("h")] -> String("x")
 [Slice("i")] -> String("this is a string")
 ```
 
 ### String escapes
-
-> TODO
 
 ```json
 {
@@ -45,7 +41,17 @@
 ```
 
 ```
-[Slice("a")] -> String("b\\n")
+[Slice("a")] -> String("b\n")
+```
+
+```json
+{
+	"a": "b\\"
+}
+```
+
+```
+[Slice("a")] -> String("b\\")
 ```
 
 ### Numbers
@@ -59,14 +65,14 @@
 ```
 
 ```
-[Slice("a")] -> Number("-6")
-[Slice("b")] -> Number("6")
-[Slice("c")] -> Number("6e10")
+[Slice("a")] -> Number(-6)
+[Slice("b")] -> Number(6)
+[Slice("c")] -> Number(60000000000)
 ```
 
 ### Nested
 
-```jsonc
+```json
 { 
 	"a": {
 		"b": 2
@@ -75,12 +81,12 @@
 ```
 
 ```
-[Slice("a"), Slice("b")] -> Number("2")
+[Slice("a"), Slice("b")] -> Number(2)
 ```
 
 ### Arrays
 
-```jsonc
+```json
 { 
 	"a": [
 		3,
@@ -91,9 +97,58 @@
 ```
 
 ```
-[Slice("a"), Index(0)] -> Number("3")
-[Slice("a"), Index(1)] -> Number("6")
-[Slice("a"), Index(2)] -> Number("7")
+[Slice("a"), Index(0)] -> Number(3)
+[Slice("a"), Index(1)] -> Number(6)
+[Slice("a"), Index(2)] -> Number(7)
+```
+
+### Top level array
+
+```json
+[{"x":2}]
+```
+
+```
+[Index(0), Slice("x")] -> Number(2)
+```
+
+### Empty objects
+
+> This works 
+
+```json
+{"x":{}}
+```
+
+```
+[Slice("x")] -> EmptyObject
+```
+
+### Empty arrays
+
+```json
+{
+	"x": []
+}
+```
+
+```
+[Slice("x")] -> EmptyArray
+```
+
+
+```json
+{
+	"x": [[]],
+	"y": [[[]]],
+	"z": [[{}]]
+}
+```
+
+```
+[Slice("x"), Index(0)] -> EmptyArray
+[Slice("y"), Index(0), Index(0)] -> EmptyArray
+[Slice("z"), Index(0), Index(0)] -> EmptyObject
 ```
 
 ### Bad syntax
@@ -108,9 +163,18 @@ Each should error
 { "a": 6, }
 ```
 
+```javascript
+[Slice("a")] -> Number(6)
+error at "}", reason ExpectedKey
 ```
-[Slice("a")] -> Number("6")
-JSONParseError { at: 10, reason: ExpectedKey }
+
+```json
+[1, ]
+```
+
+```javascript
+[Index(0)] -> Number(1)
+error at "", reason ExpectedEndOfValue
 ```
 
 ### Bad numbers
@@ -119,40 +183,36 @@ JSONParseError { at: 10, reason: ExpectedKey }
 { "a": 6NOT }
 ```
 
-```
-[Slice("a")] -> Number("6")
-JSONParseError { at: 8, reason: ExpectedEndOfValue }
+```javascript
+[Slice("a")] -> Number(6)
+error at "NOT }", reason ExpectedEndOfValue
 ```
 
-### Mismatched delimiters (1)
+### Mismatched delimiters
 
 ```json
 { } }
 ```
 
-```
+```javascript
 [] -> EmptyObject
-JSONParseError { at: 4, reason: ExpectedEndOfValue }
+completed before end of source " }"
 ```
-
-### Mismatched delimiters (2)
 
 ```json
 { ]
 ```
 
+```javascript
+error at "]", reason ExpectedKey
 ```
-JSONParseError { at: 2, reason: ExpectedKey }
-```
-
-### Mismatched delimiters (3)
 
 ```json
 [ }
 ```
 
-```
-JSONParseError { at: 2, reason: ExpectedValue }
+```javascript
+error at "}", reason ExpectedValue
 ```
 
 ### Configuration
@@ -174,10 +234,10 @@ new-line-separated
 > Note each gets an index
 
 ```
-[Index(0), Slice("x")] -> Number("2")
-[Index(1), Slice("y")] -> Number("3")
-[Index(1), Slice("y2")] -> Number("5")
-[Index(2), Slice("z")] -> Number("4")
+[Index(0), Slice("x")] -> Number(2)
+[Index(1), Slice("y")] -> Number(3)
+[Index(1), Slice("y2")] -> Number(5)
+[Index(2), Slice("z")] -> Number(4)
 ```
 
 ```jsonc
@@ -198,10 +258,10 @@ new-line-separated
 > Note each gets an index
 
 ```
-[Index(0), Slice("x")] -> Number("2")
-[Index(1), Slice("y")] -> Number("3")
-[Index(1), Slice("y2")] -> Number("5")
-[Index(2), Slice("z")] -> Number("4")
+[Index(0), Slice("x")] -> Number(2)
+[Index(1), Slice("y")] -> Number(3)
+[Index(1), Slice("y2")] -> Number(5)
+[Index(2), Slice("z")] -> Number(4)
 ```
 
 #### Trailing commas
@@ -213,9 +273,9 @@ trailing-commas
 ```
 
 ```
-[Slice("x")] -> Number("2")
-[Slice("a"), Index(0)] -> Number("1")
-[Slice("a"), Index(1)] -> Number("2")
+[Slice("x")] -> Number(2)
+[Slice("a"), Index(0)] -> Number(1)
+[Slice("a"), Index(1)] -> Number(2)
 ```
 
 #### Comments
@@ -231,12 +291,12 @@ with-comments
 ```
 
 ```
-[Slice("x")] -> Number("2")
+[Slice("x")] -> Number(2)
 [] -> Comment(" something")
-[Slice("y")] -> Number("3")
+[Slice("y")] -> Number(3)
 ```
 
-#### Comments (has variant)
+#### Comments (hash variant)
 
 ```jsonc
 with-comments
@@ -249,9 +309,9 @@ with-comments
 ```
 
 ```
-[Slice("x")] -> Number("2")
+[Slice("x")] -> Number(2)
 [] -> Comment(" something")
-[Slice("y")] -> Number("3")
+[Slice("y")] -> Number(3)
 ```
 
 #### Comments (multiline variant)
@@ -269,14 +329,43 @@ on another line
 ```
 
 ```
-[Slice("x")] -> Number("2")
+[Slice("x")] -> Number(2)
 [] -> Comment("\nhere\non another line\n")
-[Slice("y")] -> Number("3")
+[Slice("y")] -> Number(3)
 ```
 
-#### Early
+#### Extra characters
 
-#TODO
+```json
+{
+	"a": 2
+} + 2
+```
+
+```
+[Slice("a")] -> Number(2)
+completed before end of source " + 2"
+```
+
+```json
+5 + 2
+```
+
+```
+[] -> Number(5)
+completed before end of source " + 2"
+```
+
+
+#### Early return
+
+```json
+{"a": "EARLY RETURN"}
+```
+
+```javascript
+completed before end of source "}" with "returned early"
+```
 
 #### Partial syntax
 
@@ -291,5 +380,5 @@ partial
 
 ```
 [Slice("x")] -> Empty
-[Slice("y")] -> Number("3")
+[Slice("y")] -> Number(3)
 ```

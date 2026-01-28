@@ -15,7 +15,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Object(Object),
         Array(Array),
         String(String),
-        Number(String),
+        Number(f64),
         Boolean(bool),
         Null,
     }
@@ -23,8 +23,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     impl From<RootJSONValue<'_>> for Value {
         fn from(value: RootJSONValue<'_>) -> Self {
             match value {
-                RootJSONValue::String(s) => Value::String(s.to_string()),
-                RootJSONValue::Number(n) => Value::Number(n.to_string()),
+                RootJSONValue::String(s) => Value::String(s.value().to_string()),
+                RootJSONValue::Number(n) => Value::Number(n.value_unwrap()),
                 RootJSONValue::Boolean(v) => Value::Boolean(v),
                 RootJSONValue::Null => Value::Null,
                 RootJSONValue::EmptyObject => Value::new_empty_object(),

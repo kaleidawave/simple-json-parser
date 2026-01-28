@@ -11,16 +11,56 @@ pub enum JSONKey<'a> {
     Index(usize),
 }
 
-// #[derive(Debug, PartialEq, Eq)]
-// pub struct JSONString<'a>(&'a str);
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub struct JSONString<'a>(&'a str);
 
-// #[derive(Debug, PartialEq, Eq)]
-// pub struct JSONNumber<'a>(&'a str);
+impl<'a> JSONString<'a> {
+    #[must_use]
+    pub fn raw(self) -> &'a str {
+        self.0
+    }
+
+    /// The unescaped value
+    #[must_use]
+    pub fn value(self) -> Cow<'a, str> {
+        unescape_string_content(self.0)
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct JSONNumber<'a>(&'a str);
+
+impl<'a> JSONNumber<'a> {
+    #[must_use]
+    pub fn raw(self) -> &'a str {
+        self.0
+    }
+
+    /// This can fail. Initial parsing does not check numbers are well formed
+    /// for utility and performance reasons
+    ///
+    /// # Errors
+    ///
+    /// returns an `Err` if `str::parse::<f64>` returns `Err`
+    pub fn value_checked(self) -> Result<f64, std::num::ParseFloatError> {
+        str::parse(self.0)
+    }
+
+    /// Value assuming source is well formed
+    ///
+    /// # Panics
+    ///
+    /// panics if `str::parse::<f64>` returns `Err`
+    #[must_use]
+    pub fn value_unwrap(self) -> f64 {
+        self.value_checked().unwrap()
+    }
+}
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum RootJSONValue<'a> {
-    String(&'a str),
-    Number(&'a str),
+    String(JSONString<'a>),
+    Number(JSONNumber<'a>),
     Boolean(bool),
     Null,
     EmptyObject,
@@ -32,7 +72,6 @@ pub enum RootJSONValue<'a> {
     Empty,
 }
 
-// TODO are all of these used?
 #[derive(Debug)]
 pub enum JSONParseErrorReason {
     ExpectedColon,
@@ -41,7 +80,6 @@ pub enum JSONParseErrorReason {
     ExpectedBracket,
     ExpectedKey,
     ExpectedValue,
-    ExpectedEndOfMultilineComment,
     InvalidComment,
     /// Both for string values and keys
     ExpectedQuote,
@@ -85,6 +123,7 @@ pub fn parse<'a>(
 #[allow(clippy::struct_excessive_bools)]
 pub struct ParseOptions {
     pub allow_trailing_commas: bool,
+    /// returns "empty" variant on
     pub partial_syntax: bool,
     pub allow_comments: bool,
     // TODO combine with above
@@ -103,13 +142,17 @@ pub fn parse_with_options<'a, T>(
     options: &ParseOptions,
     mut cb: impl for<'b> FnMut(&'b [JSONKey<'a>], RootJSONValue<'a>) -> Option<T>,
 ) -> Result<(usize, Option<T>), JSONParseError> {
-    /// The four characters considered by the JSON specification as *whitespace*
-    const WHITESPACE: [u8; 4] = [b' ', b'\t', b'\r', b'\n'];
-
+    /// Does not check string is empty etc
     fn find_non_escaped_quoted(on: &str) -> Option<usize> {
-        on.match_indices('"')
-            .map(|(idx, _)| idx)
-            .find(|&idx| !on[..idx].ends_with('\\'))
+        let mut characters = on.bytes().enumerate();
+        while let Some((idx, chr)) = characters.next() {
+            if b'\\' == chr {
+                let _ = characters.next();
+            } else if b'"' == chr {
+                return Some(idx);
+            }
+        }
+        None
     }
 
     fn parse_comment(on: &str) -> Option<(&str, usize)> {
@@ -127,11 +170,9 @@ pub fn parse_with_options<'a, T>(
         }
     }
 
-    let mut idx = 0;
-    let mut key_chain = Vec::new();
-    let mut in_object = false;
-    let bytes = on.as_bytes();
-    let tls = options.top_level_separator;
+    let (mut idx, mut key_chain, mut in_object): (usize, Vec<JSONKey<'_>>, bool) =
+        Default::default();
+    let (bytes, tls) = (on.as_bytes(), options.top_level_separator);
 
     if tls.is_some() {
         key_chain.push(JSONKey::Index(0));
@@ -159,16 +200,16 @@ pub fn parse_with_options<'a, T>(
     macro_rules! skip_whitespace_find_comments {
         () => {
             while let Some(byte) = bytes.get(idx) {
-                if WHITESPACE.contains(&byte) {
+                if let b' ' | b'\t' | b'\r' | b'\n' = byte {
                     idx += 1;
                 } else if let b'/' | b'#' = byte {
                     let Some((comment, offset)) = parse_comment(&on[idx..]) else {
                         return_err!(InvalidComment);
                     };
+                    idx += offset;
                     if options.yield_comments {
                         emit!(RootJSONValue::Comment(comment));
                     }
-                    idx += offset;
                 } else {
                     break;
                 }
@@ -181,8 +222,7 @@ pub fn parse_with_options<'a, T>(
     while idx < bytes.len() {
         if in_object {
             skip_whitespace_find_comments!();
-            let byte = bytes.get(idx).copied().unwrap_or(0);
-            if byte == b'"' {
+            if let Some(b'"') = bytes.get(idx) {
                 let rest = &on[1..][idx..];
                 let Some(offset) = find_non_escaped_quoted(rest) else {
                     return_err!(ExpectedQuote);
@@ -190,12 +230,11 @@ pub fn parse_with_options<'a, T>(
                 key_chain.push(JSONKey::Slice(&rest[..offset]));
                 idx += offset + 2;
                 skip_whitespace_find_comments!();
-                if let Some(b':') = on.as_bytes().get(idx) {
-                    idx += 1;
-                } else {
+                if on.as_bytes().get(idx).copied().unwrap_or_default() != b':' {
                     // TODO partial could find next ':'?
                     return_err!(ExpectedColon);
                 }
+                idx += 1;
             } else {
                 return_err!(ExpectedKey);
             }
@@ -203,33 +242,31 @@ pub fn parse_with_options<'a, T>(
 
         skip_whitespace_find_comments!();
 
-        // TODO unwrap_or to option
-        match bytes.get(idx).copied().unwrap_or(0) {
-            b'{' => {
+        match bytes.get(idx).copied() {
+            Some(b'{') => {
                 idx += 1;
                 // little hack
                 skip_whitespace_find_comments!();
                 if let Some(b'}') = bytes.get(idx) {
-                    emit!(RootJSONValue::EmptyObject);
                     idx += 1;
+                    emit!(RootJSONValue::EmptyObject);
                 } else {
                     in_object = true;
                     continue;
                 }
             }
-            b'[' => {
+            Some(b'[') => {
                 idx += 1;
                 key_chain.push(JSONKey::Index(0));
                 in_object = false;
                 continue;
             }
-            b']' => {
+            Some(b']') => {
                 idx += 1;
                 match key_chain.pop() {
                     Some(JSONKey::Index(0)) => {
                         emit!(RootJSONValue::EmptyArray);
                     }
-                    // TODO trailing comma
                     Some(JSONKey::Index(_)) if options.allow_trailing_commas => {}
                     _ => {
                         return_err!(ExpectedEndOfValue);
@@ -237,15 +274,16 @@ pub fn parse_with_options<'a, T>(
                 }
                 in_object = matches!(key_chain.last(), Some(JSONKey::Slice(_)));
             }
-            b'"' => {
+            Some(b'"') => {
                 let rest = &on[idx..][1..];
                 let Some(offset) = find_non_escaped_quoted(rest) else {
                     return_err!(ExpectedEndOfValue);
                 };
                 idx += offset + 2;
-                emit!(RootJSONValue::String(&rest[..offset]));
+                emit!(RootJSONValue::String(JSONString(&rest[..offset])));
             }
-            b'0'..=b'9' | b'-' => {
+            Some(b'0'..=b'9' | b'-') => {
+                /// can include bad values
                 fn find_non_number(chr: char) -> bool {
                     !matches!(chr, '0'..='9' | '.' | 'e' | 'E' | '+' | '-')
                 }
@@ -254,23 +292,22 @@ pub fn parse_with_options<'a, T>(
                 let Some(offset) = rest.find(find_non_number) else {
                     return_err!(ExpectedEndOfValue);
                 };
-                // I think it is fine to delegate parsing to the user
-                emit!(RootJSONValue::Number(&rest[..offset]));
                 idx += offset;
+                emit!(RootJSONValue::Number(JSONNumber(&rest[..offset])));
             }
-            b't' if on[idx..].starts_with("true") => {
+            Some(b't') if on[idx..].starts_with("true") => {
                 idx += 4;
                 emit!(RootJSONValue::Boolean(true));
             }
-            b'f' if on[idx..].starts_with("false") => {
+            Some(b'f') if on[idx..].starts_with("false") => {
                 idx += 5;
                 emit!(RootJSONValue::Boolean(false));
             }
-            b'n' if on[idx..].starts_with("null") => {
+            Some(b'n') if on[idx..].starts_with("null") => {
                 idx += 4;
                 emit!(RootJSONValue::Null);
             }
-            b @ (b',' | b'}') if options.partial_syntax => {
+            Some(b @ (b',' | b'}')) if options.partial_syntax => {
                 emit!(RootJSONValue::Empty);
                 idx += 1;
                 if in_object {
@@ -286,22 +323,26 @@ pub fn parse_with_options<'a, T>(
         }
 
         while let Some(byte) = bytes.get(idx) {
+            if key_chain.is_empty() {
+                return Ok((idx, None));
+            }
+
             if tls.is_some_and(|c: char| on[idx..].starts_with(c)) {
                 idx += 1;
                 if let [JSONKey::Index(ref mut idx)] = key_chain.as_mut_slice() {
                     *idx += 1;
                     break;
                 }
-            } else if WHITESPACE.contains(byte) {
+            } else if let b' ' | b'\t' | b'\r' | b'\n' = byte {
                 idx += 1;
             } else if let b'/' | b'#' = byte {
                 let Some((comment, offset)) = parse_comment(&on[idx..]) else {
                     return_err!(InvalidComment);
                 };
+                idx += offset;
                 if options.yield_comments {
                     emit!(RootJSONValue::Comment(comment));
                 }
-                idx += offset;
             } else {
                 let new_byte = if *byte == b',' {
                     idx += 1;
@@ -314,18 +355,15 @@ pub fn parse_with_options<'a, T>(
                         break;
                     }
                     skip_whitespace_find_comments!();
-                    if let Some(b @ (b'}' | b']')) = bytes.get(idx) {
-                        *b
-                    } else {
+                    let Some(b @ (b'}' | b']')) = bytes.get(idx) else {
                         break;
-                    }
+                    };
+                    *b
                 } else {
                     *byte
                 };
-                // TODO JSONKey::delimeter?
                 match new_byte {
-                    b'}' if *byte == b','
-                        || matches!(key_chain.last(), Some(JSONKey::Slice(_))) => {}
+                    b'}' if *byte == b',' || in_object => {}
                     b']' if matches!(key_chain.last(), Some(JSONKey::Index(_))) => {}
                     _ => {
                         return_err!(ExpectedEndOfValue);
@@ -347,7 +385,7 @@ pub fn parse_with_options<'a, T>(
     Ok((on.len(), None))
 }
 
-/// Equates key chains while accounting for escapes
+/// Equates key chains while accounting for escapes. TODO no unicode thingies
 #[must_use]
 pub fn key_chain_equals(keys: &[JSONKey<'_>], expected: &[JSONKey<'_>]) -> bool {
     if keys.len() == expected.len() {
@@ -388,7 +426,7 @@ pub fn unescape_string_content(on: &str) -> Cow<'_, str> {
     let mut result = Cow::Borrowed("");
     let mut start = 0;
     for (index, _matched) in on.match_indices('\\') {
-        if index <= start {
+        if index < start {
             continue;
         }
         result += &on[start..index];
@@ -418,6 +456,11 @@ pub fn unescape_string_content(on: &str) -> Cow<'_, str> {
                 result += "\t";
                 start = index + 2;
             }
+            // 📸
+            Some('q') => {
+                result += "\"";
+                start = index + 2;
+            }
             Some('u') => {
                 fn parse_hex(on: &str) -> Result<u32, &str> {
                     let mut value = 0u32;
@@ -437,15 +480,13 @@ pub fn unescape_string_content(on: &str) -> Cow<'_, str> {
                 }
 
                 let unicode_char = on[index..][2..]
-                    .get(0..6)
-                    .and_then(|s| s.strip_prefix('{'))
-                    .and_then(|s| s.strip_suffix('}'))
+                    .get(0..4)
                     .and_then(|slice| parse_hex(slice).ok())
                     .and_then(char::from_u32);
 
                 if let Some(item) = unicode_char {
-                    result.to_mut().push(dbg!(item));
-                    start = index + 8;
+                    result.to_mut().push(item);
+                    start = index + 6;
                 } else {
                     start = index;
                     eprintln!("expected 4 hex digits");
@@ -455,8 +496,7 @@ pub fn unescape_string_content(on: &str) -> Cow<'_, str> {
                 start = index + 1;
                 eprintln!("unexpected item {chr:?}");
             }
-            // This is unreachable with the results returned
-            // from JSON parsing
+            // This is unreachable with the results returned from JSON parsing
             None => {
                 start = index;
                 eprintln!("end of item?");
@@ -503,7 +543,8 @@ mod tests {
             unescape_string_content("tab\\t and newline\n"),
             "tab\t and newline\n"
         );
-        assert_eq!(unescape_string_content("hex\\u{0021}"), "hex!");
+        assert_eq!(unescape_string_content("hex\\u0021"), "hex!");
+        assert_eq!(unescape_string_content("\\t\\t"), "\t\t");
     }
 
     #[test]

@@ -12,13 +12,4 @@ Features
 - Supports partials (aka values ended early by `,`, `]` or `}`)
 - New line delimeted parsing
 
-See [examples](/examples/) and [tests](/tests/) for usage.
-
-### TODO
-
-- number parsing?
-- string and number wrappers
-- test for partial parsing
-- move the to-object file, as a module under `feature=extra`
-
-> do all examples work? should some of the implementations be under cfg? maybe extras
+See [the specification](/specification.md) for all supported features. See [examples](/examples/) and [tests](/tests/) for usage.
