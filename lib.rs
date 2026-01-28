@@ -144,15 +144,11 @@ pub fn parse_with_options<'a, T>(
 ) -> Result<(usize, Option<T>), JSONParseError> {
     /// Does not check string is empty etc
     fn find_non_escaped_quoted(on: &str) -> Option<usize> {
-        let mut characters = on.bytes().enumerate();
-        while let Some((idx, chr)) = characters.next() {
-            if b'\\' == chr {
-                let _ = characters.next();
-            } else if b'"' == chr {
-                return Some(idx);
-            }
-        }
-        None
+        on.match_indices('"').find_map(|(idx, _)| {
+            let rev = on[..idx].bytes();
+            let last = rev.rev().take_while(|chr: &u8| *chr == b'\\').count();
+            (last % 2 == 0).then_some(idx)
+        })
     }
 
     fn parse_comment(on: &str) -> Option<(&str, usize)> {

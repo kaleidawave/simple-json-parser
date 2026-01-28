@@ -33,6 +33,7 @@ fn main() {
         } else {
             EXAMPLE.trim_start().to_owned()
         };
+        let mut black_box = false;
         for arg in args {
             if arg == "--comments" {
                 options.allow_comments = true;
@@ -41,15 +42,25 @@ fn main() {
                 options.partial_syntax = true;
             } else if arg == "--trailing" {
                 options.allow_trailing_commas = true;
+            } else if arg == "--black-box" {
+                black_box = true;
             } else {
                 eprintln!("unknown arg {arg:?}");
             }
         }
 
-        let result = parse_json::<()>(&source, &options, |keys, value| {
-            println!("{keys:?} -> {value:?}");
-            None
-        });
+        let result = if black_box {
+            parse_json::<()>(&source, &options, |keys, value| {
+                std::hint::black_box(keys);
+                std::hint::black_box(value);
+                None
+            })
+        } else {
+            parse_json::<()>(&source, &options, |keys, value| {
+                println!("{keys:?} -> {value:?}");
+                None
+            })
+        };
 
         match result {
             Ok((bytes, value)) => {
