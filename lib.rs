@@ -1,15 +1,75 @@
-#[derive(Debug, Clone, PartialEq, Eq)]
+#![doc = include_str!("./README.md")]
+
+use std::borrow::Cow;
+
+/// A identifier into JSON
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum JSONKey<'a> {
+    /// From `"x": ..`
     Slice(&'a str),
+    /// From `[..]`
     Index(usize),
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub struct JSONString<'a>(&'a str);
+
+impl<'a> JSONString<'a> {
+    #[must_use]
+    pub fn raw(self) -> &'a str {
+        self.0
+    }
+
+    /// The unescaped value
+    #[must_use]
+    pub fn value(self) -> Cow<'a, str> {
+        unescape_string_content(self.0)
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct JSONNumber<'a>(&'a str);
+
+impl<'a> JSONNumber<'a> {
+    #[must_use]
+    pub fn raw(self) -> &'a str {
+        self.0
+    }
+
+    /// This can fail. Initial parsing does not check numbers are well formed
+    /// for utility and performance reasons
+    ///
+    /// # Errors
+    ///
+    /// returns an `Err` if `str::parse::<f64>` returns `Err`
+    pub fn value_checked(self) -> Result<f64, std::num::ParseFloatError> {
+        str::parse(self.0)
+    }
+
+    /// Value assuming source is well formed
+    ///
+    /// # Panics
+    ///
+    /// panics if `str::parse::<f64>` returns `Err`
+    #[must_use]
+    pub fn value_unwrap(self) -> f64 {
+        self.value_checked().unwrap()
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum RootJSONValue<'a> {
-    String(&'a str),
-    Number(&'a str),
+    String(JSONString<'a>),
+    Number(JSONNumber<'a>),
     Boolean(bool),
     Null,
+    EmptyObject,
+    EmptyArray,
+    /// Under `yield_comments` these are *sometimes* emitted as to preserve
+    /// information during formatting
+    Comment(&'a str),
+    /// For `options.partial_syntax` WIP
+    Empty,
 }
 
 #[derive(Debug)]
@@ -18,10 +78,9 @@ pub enum JSONParseErrorReason {
     ExpectedEndOfValue,
     /// Doubles as both closing and ending
     ExpectedBracket,
-    ExpectedTrueFalseNull,
     ExpectedKey,
     ExpectedValue,
-    ExpectedEndOfMultilineComment,
+    InvalidComment,
     /// Both for string values and keys
     ExpectedQuote,
 }
@@ -44,7 +103,7 @@ impl std::fmt::Display for JSONParseError {
 }
 
 /// If you want to return early (break on an exception in the callback) or
-/// more configuration use [`parse_with_exit_signal`]
+/// more configuration use [`parse_with_options`]
 ///
 /// # Errors
 /// Returns an error if it tries to parse invalid JSON input
@@ -52,326 +111,448 @@ pub fn parse<'a>(
     on: &'a str,
     mut cb: impl for<'b> FnMut(&'b [JSONKey<'a>], RootJSONValue<'a>),
 ) -> Result<usize, JSONParseError> {
-    parse_with_exit_signal(
-        on,
-        |k, v| {
-            cb(k, v);
-            false
-        },
-        false,
-        true,
-    )
+    let options = ParseOptions::default();
+    parse_with_options(on, &options, |k, v| {
+        cb(k, v);
+        None::<()>
+    })
+    .map(|(parsed, _)| parsed)
 }
 
-enum State {
-    InKey {
-        escaped: bool,
-        start: usize,
-    },
-    Colon,
-    InObject,
-    Comment {
-        start: usize,
-        multiline: bool,
-        last_was_asterisk: bool,
-        hash: bool,
-    },
-    ExpectingValue,
-    StringValue {
-        start: usize,
-        escaped: bool,
-    },
-    NumberValue {
-        start: usize,
-    },
-    TrueFalseNull {
-        start: usize,
-    },
-    EndOfValue,
+#[derive(Default, Debug)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct ParseOptions {
+    pub allow_trailing_commas: bool,
+    /// returns "empty" variant on
+    pub partial_syntax: bool,
+    pub allow_comments: bool,
+    // TODO combine with above
+    pub yield_comments: bool,
+    // For new line JSON etc
+    pub top_level_separator: Option<char>,
+    // pub top_level_separator: Option<&'static str>,
 }
 
-// TODO always pops from key_chain **unless** we are in an array.
-// TODO there are complications using this in an iterator when we yielding numbers
-fn end_of_value(
-    idx: usize,
-    chr: char,
-    state: &mut State,
-    key_chain: &mut Vec<JSONKey<'_>>,
-    allow_comments: bool,
-) -> Result<(), JSONParseError> {
-    if chr == ',' {
-        if let Some(JSONKey::Index(i)) = key_chain.last_mut() {
-            *i += 1;
-            *state = State::ExpectingValue;
-        } else {
-            key_chain.pop();
-            *state = State::InObject;
-        }
-    } else if let ('}', Some(JSONKey::Slice(..))) = (chr, key_chain.last()) {
-        // TODO errors here if index
-        key_chain.pop();
-    } else if let (']', Some(JSONKey::Index(..))) = (chr, key_chain.last()) {
-        // TODO errors here if slice etc
-        key_chain.pop();
-    } else if let (true, c @ ('/' | '#')) = (allow_comments, chr) {
-        key_chain.pop();
-        *state = State::Comment {
-            last_was_asterisk: false,
-            start: idx,
-            multiline: false,
-            hash: c == '#',
-        };
-    } else if !chr.is_whitespace() {
-        return Err(JSONParseError {
-            at: idx,
-            reason: JSONParseErrorReason::ExpectedEndOfValue,
-        });
-    }
-    Ok(())
-}
-
-/// Returns the number of bytes parsed.
-/// `exit_on_first_value` returns once the first object has been parsed.
+/// Returns the number of bytes parsed
 ///
 /// # Errors
 /// Returns an error if it tries to parse invalid JSON input
-#[allow(clippy::too_many_lines)]
-pub fn parse_with_exit_signal<'a>(
+pub fn parse_with_options<'a, T>(
     on: &'a str,
-    mut cb: impl for<'b> FnMut(&'b [JSONKey<'a>], RootJSONValue<'a>) -> bool,
-    exit_on_first_value: bool,
-    allow_comments: bool,
-) -> Result<usize, JSONParseError> {
-    let chars = on.char_indices();
+    options: &ParseOptions,
+    mut cb: impl for<'b> FnMut(&'b [JSONKey<'a>], RootJSONValue<'a>) -> Option<T>,
+) -> Result<(usize, Option<T>), JSONParseError> {
+    fn find_non_escaped_quoted(on: &str) -> Option<usize> {
+        on.match_indices('"').find_map(|(idx, _)| {
+            let rev = on[..idx].bytes();
+            let last = rev.rev().take_while(|chr: &u8| *chr == b'\\').count();
+            (last % 2 == 0).then_some(idx)
+        })
+    }
 
-    let mut key_chain = Vec::new();
-    let mut state = State::ExpectingValue;
+    fn parse_comment(on: &str) -> Option<(&str, usize)> {
+        if let Some(rest) = on.strip_prefix('#') {
+            let offset = rest.find('\n').unwrap_or(rest.len());
+            Some((&on[..offset], offset + 1))
+        } else if let Some(rest) = on.strip_prefix("//") {
+            let offset = rest.find('\n').unwrap_or(rest.len());
+            Some((&on[..offset], offset + 2))
+        } else if let Some(rest) = on.strip_prefix("/*") {
+            let offset = rest.find("*/")?;
+            Some((&rest[..offset], offset + 4))
+        } else {
+            None
+        }
+    }
 
-    for (idx, chr) in chars {
-        match state {
-            State::InKey {
-                start,
-                ref mut escaped,
-            } => {
-                if !*escaped && chr == '"' {
-                    key_chain.push(JSONKey::Slice(&on[start..idx]));
-                    state = State::Colon;
+    let (mut idx, mut key_chain, mut in_object): (usize, Vec<JSONKey<'_>>, bool) =
+        Default::default();
+    let (bytes, tls) = (on.as_bytes(), options.top_level_separator);
+
+    if tls.is_some() {
+        key_chain.push(JSONKey::Index(0));
+    }
+
+    macro_rules! emit {
+        ($item:expr) => {
+            // TODO pass idx
+            let res = cb(&key_chain, $item);
+            if res.is_some() {
+                return Ok((idx, res));
+            }
+        };
+    }
+
+    macro_rules! return_err {
+        ($reason:ident) => {
+            return Err(JSONParseError {
+                at: idx,
+                reason: JSONParseErrorReason::$reason,
+            });
+        };
+    }
+
+    macro_rules! skip_whitespace_find_comments {
+        () => {
+            while let Some(byte) = bytes.get(idx) {
+                if let b' ' | b'\t' | b'\r' | b'\n' = byte {
+                    idx += 1;
+                } else if let b'/' | b'#' = byte {
+                    let Some((comment, offset)) = parse_comment(&on[idx..]) else {
+                        return_err!(InvalidComment);
+                    };
+                    idx += offset;
+                    if options.yield_comments {
+                        emit!(RootJSONValue::Comment(comment));
+                    }
                 } else {
-                    *escaped = chr == '\\';
+                    break;
                 }
             }
-            State::StringValue {
-                start,
-                ref mut escaped,
-            } => {
-                if !*escaped && chr == '"' {
-                    state = State::EndOfValue;
-                    let res = cb(&key_chain, RootJSONValue::String(&on[start..idx]));
-                    if res {
-                        return Ok(idx + chr.len_utf8());
-                    }
-                } else {
-                    *escaped = chr == '\\';
-                }
-            }
-            State::Colon => {
-                if chr == ':' {
-                    state = State::ExpectingValue;
-                } else if !chr.is_whitespace() {
-                    return Err(JSONParseError {
-                        at: idx,
-                        reason: JSONParseErrorReason::ExpectedColon,
-                    });
-                }
-            }
-            State::EndOfValue => {
-                end_of_value(idx, chr, &mut state, &mut key_chain, allow_comments)?;
+        };
+    }
 
-                if exit_on_first_value && key_chain.is_empty() && chr != ',' {
-                    return Ok(idx + chr.len_utf8());
+    skip_whitespace_find_comments!();
+
+    while idx < bytes.len() {
+        if in_object {
+            skip_whitespace_find_comments!();
+            if let Some(b'"') = bytes.get(idx) {
+                let rest = &on[1..][idx..];
+                let Some(offset) = find_non_escaped_quoted(rest) else {
+                    return_err!(ExpectedQuote);
+                };
+                key_chain.push(JSONKey::Slice(&rest[..offset]));
+                idx += offset + 2;
+                skip_whitespace_find_comments!();
+                if on.as_bytes().get(idx).copied().unwrap_or_default() != b':' {
+                    // TODO partial could find next ':'?
+                    return_err!(ExpectedColon);
+                }
+                idx += 1;
+            } else {
+                return_err!(ExpectedKey);
+            }
+        }
+
+        skip_whitespace_find_comments!();
+
+        match bytes.get(idx).copied() {
+            Some(b'{') => {
+                idx += 1;
+                // little hack
+                skip_whitespace_find_comments!();
+                if let Some(b'}') = bytes.get(idx) {
+                    idx += 1;
+                    emit!(RootJSONValue::EmptyObject);
+                } else {
+                    in_object = true;
+                    continue;
                 }
             }
-            State::Comment {
-                ref mut last_was_asterisk,
-                ref mut multiline,
-                hash,
-                start,
-            } => {
-                if chr == '\n' && !*multiline {
-                    if let Some(JSONKey::Index(..)) = key_chain.last() {
-                        state = State::ExpectingValue;
-                    } else {
-                        state = State::InObject;
-                    }
-                } else if chr == '*' && start + 1 == idx && !hash {
-                    *multiline = true;
-                } else if *multiline {
-                    if *last_was_asterisk && chr == '/' {
-                        if let Some(JSONKey::Index(..)) = key_chain.last() {
-                            state = State::ExpectingValue;
-                        } else {
-                            state = State::InObject;
-                        }
-                    } else {
-                        *last_was_asterisk = chr == '*';
-                    }
-                }
+            Some(b'[') => {
+                idx += 1;
+                key_chain.push(JSONKey::Index(0));
+                in_object = false;
+                continue;
             }
-            State::ExpectingValue => {
-                state = match chr {
-                    '{' => State::InObject,
-                    '[' => {
-                        key_chain.push(JSONKey::Index(0));
-                        State::ExpectingValue
+            Some(b']') => {
+                idx += 1;
+                match key_chain.pop() {
+                    Some(JSONKey::Index(0)) => {
+                        emit!(RootJSONValue::EmptyArray);
                     }
-                    '"' => State::StringValue {
-                        start: idx + '"'.len_utf8(),
-                        escaped: false,
-                    },
-                    c @ ('/' | '#') if allow_comments => State::Comment {
-                        last_was_asterisk: false,
-                        start: idx,
-                        multiline: false,
-                        hash: c == '#',
-                    },
-                    '0'..='9' | '-' => State::NumberValue { start: idx },
-                    't' | 'f' | 'n' => State::TrueFalseNull { start: idx },
-                    chr if chr.is_whitespace() => state,
+                    Some(JSONKey::Index(_)) if options.allow_trailing_commas => {}
                     _ => {
-                        return Err(JSONParseError {
-                            at: idx,
-                            reason: JSONParseErrorReason::ExpectedValue,
-                        })
+                        return_err!(ExpectedEndOfValue);
                     }
                 }
+                in_object = matches!(key_chain.last(), Some(JSONKey::Slice(_)));
             }
-            State::InObject => {
-                if chr == '"' {
-                    state = State::InKey {
-                        escaped: false,
-                        start: idx + '"'.len_utf8(),
-                    };
-                } else if chr == '}' {
-                    if let Some(JSONKey::Index(..)) = key_chain.last() {
-                        state = State::ExpectingValue;
+            Some(b'"') => {
+                let rest = &on[idx..][1..];
+                let Some(offset) = find_non_escaped_quoted(rest) else {
+                    return_err!(ExpectedEndOfValue);
+                };
+                idx += offset + 2;
+                emit!(RootJSONValue::String(JSONString(&rest[..offset])));
+            }
+            Some(b'0'..=b'9' | b'-') => {
+                /// can include bad values
+                fn find_non_number(chr: char) -> bool {
+                    !matches!(chr, '0'..='9' | '.' | 'e' | 'E' | '+' | '-')
+                }
+
+                let rest = &on[idx..];
+                let Some(offset) = rest.find(find_non_number) else {
+                    return_err!(ExpectedEndOfValue);
+                };
+                idx += offset;
+                emit!(RootJSONValue::Number(JSONNumber(&rest[..offset])));
+            }
+            Some(b't') if on[idx..].starts_with("true") => {
+                idx += 4;
+                emit!(RootJSONValue::Boolean(true));
+            }
+            Some(b'f') if on[idx..].starts_with("false") => {
+                idx += 5;
+                emit!(RootJSONValue::Boolean(false));
+            }
+            Some(b'n') if on[idx..].starts_with("null") => {
+                idx += 4;
+                emit!(RootJSONValue::Null);
+            }
+            Some(b @ (b',' | b'}')) if options.partial_syntax => {
+                emit!(RootJSONValue::Empty);
+                idx += 1;
+                if in_object {
+                    let _ = key_chain.pop();
+                }
+                if b == b',' {
+                    continue;
+                }
+            }
+            _ => {
+                return_err!(ExpectedValue);
+            }
+        }
+
+        while let Some(byte) = bytes.get(idx) {
+            if key_chain.is_empty() {
+                return Ok((idx, None));
+            }
+
+            if tls.is_some_and(|c: char| on[idx..].starts_with(c)) {
+                idx += 1;
+                if let [JSONKey::Index(ref mut idx)] = key_chain.as_mut_slice() {
+                    *idx += 1;
+                    break;
+                }
+            } else if let b' ' | b'\t' | b'\r' | b'\n' = byte {
+                idx += 1;
+            } else if let b'/' | b'#' = byte {
+                let Some((comment, offset)) = parse_comment(&on[idx..]) else {
+                    return_err!(InvalidComment);
+                };
+                idx += offset;
+                if options.yield_comments {
+                    emit!(RootJSONValue::Comment(comment));
+                }
+            } else {
+                let new_byte = if *byte == b',' {
+                    idx += 1;
+                    if let Some(JSONKey::Index(ref mut idx)) = key_chain.last_mut() {
+                        *idx += 1;
                     } else {
-                        state = State::InObject;
+                        key_chain.pop();
                     }
-                } else if let (true, c @ ('/' | '#')) = (allow_comments, chr) {
-                    state = State::Comment {
-                        last_was_asterisk: false,
-                        start: idx,
-                        multiline: false,
-                        hash: c == '#',
+                    if !options.allow_trailing_commas {
+                        break;
+                    }
+                    skip_whitespace_find_comments!();
+                    let Some(b @ (b'}' | b']')) = bytes.get(idx) else {
+                        break;
                     };
-                } else if !chr.is_whitespace() {
-                    return Err(JSONParseError {
-                        at: idx,
-                        reason: JSONParseErrorReason::ExpectedKey,
-                    });
-                }
-            }
-            State::NumberValue { start } => {
-                // TODO actual number handing
-                if chr.is_whitespace() || matches!(chr, '}' | ',' | ']') {
-                    let res = cb(&key_chain, RootJSONValue::Number(&on[start..idx]));
-                    if res {
-                        return Ok(idx);
-                    }
-                    state = State::EndOfValue;
-                    end_of_value(idx, chr, &mut state, &mut key_chain, allow_comments)?;
-                }
-            }
-            State::TrueFalseNull { start } => {
-                let diff = idx - start + 1;
-                if diff < 4 {
-                    // ...
-                } else if diff == 4 {
-                    match &on[start..=idx] {
-                        "true" => {
-                            let res = cb(&key_chain, RootJSONValue::Boolean(true));
-                            if res {
-                                return Ok(idx + chr.len_utf8());
-                            }
-                            state = State::EndOfValue;
-                        }
-                        "null" => {
-                            let res = cb(&key_chain, RootJSONValue::Null);
-                            if res {
-                                return Ok(idx + chr.len_utf8());
-                            }
-                            state = State::EndOfValue;
-                        }
-                        "fals" => {}
-                        _ => {
-                            return Err(JSONParseError {
-                                at: idx,
-                                reason: JSONParseErrorReason::ExpectedTrueFalseNull,
-                            })
-                        }
-                    }
-                } else if let "false" = &on[start..=idx] {
-                    let res = cb(&key_chain, RootJSONValue::Boolean(false));
-                    if res {
-                        return Ok(idx + chr.len_utf8());
-                    }
-                    state = State::EndOfValue;
+                    *b
                 } else {
-                    return Err(JSONParseError {
-                        at: idx,
-                        reason: JSONParseErrorReason::ExpectedTrueFalseNull,
-                    });
+                    *byte
+                };
+                match new_byte {
+                    b'}' if *byte == b',' || in_object => {}
+                    b']' if matches!(key_chain.last(), Some(JSONKey::Index(_))) => {}
+                    _ => {
+                        return_err!(ExpectedEndOfValue);
+                    }
+                }
+                idx += 1;
+                key_chain.pop();
+                in_object = matches!(key_chain.last(), Some(JSONKey::Slice(_)));
+            }
+        }
+    }
+
+    let tl = tls.is_some_and(|_| matches!(key_chain.as_slice(), &[JSONKey::Index(_)]));
+
+    if !(key_chain.is_empty() || tl) {
+        return_err!(ExpectedBracket);
+    }
+
+    Ok((on.len(), None))
+}
+
+/// Equates key chains while accounting for escapes. TODO no unicode thingies
+#[must_use]
+pub fn key_chain_equals(keys: &[JSONKey<'_>], expected: &[JSONKey<'_>]) -> bool {
+    if keys.len() == expected.len() {
+        for (expected, key) in std::iter::zip(expected, keys) {
+            match (expected, key) {
+                (JSONKey::Slice(expected), JSONKey::Slice(key)) => {
+                    let mut key_chars = key.chars();
+                    for expected in expected.chars() {
+                        let next = key_chars.next();
+                        // Extract escapes
+                        let next = if next.is_some_and(|inner| inner == '\\') {
+                            key_chars.next()
+                        } else {
+                            next
+                        };
+                        if next.is_none_or(|key_chr| expected != key_chr) {
+                            return false;
+                        }
+                    }
+                }
+                (JSONKey::Index(expected), JSONKey::Index(key)) => {
+                    if expected != key {
+                        return false;
+                    }
+                }
+                (_, _) => return false,
+            }
+        }
+        true
+    } else {
+        false
+    }
+}
+
+/// Modified version of <https://github.com/parcel-bundler/parcel/blob/f86f5f27c3a6553e70bd35652f19e6ab8d8e4e4a/crates/dev-dep-resolver/src/lib.rs#L368-L380>
+#[must_use]
+pub fn unescape_string_content(on: &str) -> Cow<'_, str> {
+    let mut result = Cow::Borrowed("");
+    let mut start = 0;
+    for (index, _matched) in on.match_indices('\\') {
+        if index < start {
+            continue;
+        }
+        result += &on[start..index];
+        match on[index..][1..].chars().next() {
+            Some('"' | '\\' | '/') => {
+                start = index + 1;
+            }
+            Some('b') => {
+                // backspace
+                result += "\u{08}";
+                start = index + 2;
+            }
+            Some('f') => {
+                // formfeed
+                result += "\u{0c}";
+                start = index + 2;
+            }
+            Some('n') => {
+                result += "\n";
+                start = index + 2;
+            }
+            Some('r') => {
+                result += "\r";
+                start = index + 2;
+            }
+            Some('t') => {
+                result += "\t";
+                start = index + 2;
+            }
+            // 📸
+            Some('q') => {
+                result += "\"";
+                start = index + 2;
+            }
+            Some('u') => {
+                fn parse_hex(on: &str) -> Result<u32, &str> {
+                    let mut value = 0u32;
+                    for byte in on.bytes() {
+                        value <<= 4; // log2(16) = 4
+                        let code = match byte {
+                            b'0'..=b'9' => u32::from(byte - b'0'),
+                            b'a'..=b'f' => u32::from(byte - b'a') + 10,
+                            b'A'..=b'F' => u32::from(byte - b'A') + 10,
+                            _byte => {
+                                return Err(on);
+                            }
+                        };
+                        value |= code;
+                    }
+                    Ok(value)
+                }
+
+                let unicode_char = on[index..][2..]
+                    .get(0..4)
+                    .and_then(|slice| parse_hex(slice).ok())
+                    .and_then(char::from_u32);
+
+                if let Some(item) = unicode_char {
+                    result.to_mut().push(item);
+                    start = index + 6;
+                } else {
+                    start = index;
+                    eprintln!("expected 4 hex digits");
                 }
             }
-        }
-    }
-
-    match state {
-        State::InKey { .. } | State::StringValue { .. } => {
-            return Err(JSONParseError {
-                at: on.len(),
-                reason: JSONParseErrorReason::ExpectedQuote,
-            })
-        }
-        State::Colon => {
-            return Err(JSONParseError {
-                at: on.len(),
-                reason: JSONParseErrorReason::ExpectedColon,
-            });
-        }
-        State::Comment { multiline, .. } => {
-            if multiline {
-                return Err(JSONParseError {
-                    at: on.len(),
-                    reason: JSONParseErrorReason::ExpectedEndOfMultilineComment,
-                });
+            Some(chr) => {
+                start = index + 1;
+                eprintln!("unexpected item {chr:?}");
+            }
+            // This is unreachable with the results returned from JSON parsing
+            None => {
+                start = index;
+                eprintln!("end of item?");
             }
         }
-        State::EndOfValue | State::ExpectingValue => {
-            if !key_chain.is_empty() {
-                return Err(JSONParseError {
-                    at: on.len(),
-                    reason: JSONParseErrorReason::ExpectedBracket,
-                });
-            }
-        }
-        State::InObject => {
-            return Err(JSONParseError {
-                at: on.len(),
-                reason: JSONParseErrorReason::ExpectedBracket,
-            });
-        }
-        State::NumberValue { start } => {
-            // TODO actual number handing
-            let _result = cb(&key_chain, RootJSONValue::Number(&on[start..]));
-        }
-        State::TrueFalseNull { start: _ } => {
-            return Err(JSONParseError {
-                at: on.len(),
-                reason: JSONParseErrorReason::ExpectedTrueFalseNull,
-            })
-        }
+    }
+    result += &on[start..];
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn key_chain_equality() {
+        assert!(key_chain_equals(
+            &[JSONKey::Slice("k1"), JSONKey::Slice("q\\\"")],
+            &[JSONKey::Slice("k1"), JSONKey::Slice("q\"")]
+        ));
+        assert!(!key_chain_equals(
+            &[JSONKey::Slice("k1"), JSONKey::Slice("b\\\"")],
+            &[JSONKey::Slice("k1"), JSONKey::Slice("q\"")]
+        ));
     }
 
-    Ok(on.len())
+    #[test]
+    fn unescaping_none_no_transform() {
+        // We do no allocate when transformation is not done
+        // assert!(unescape_string_content("No quotes here").is_borrowed());
+        assert!(matches!(
+            unescape_string_content("No quotes here"),
+            Cow::Borrowed(_)
+        ));
+    }
+
+    #[test]
+    fn unescaping() {
+        assert_eq!(
+            unescape_string_content("Something with \\\"quotes\\\""),
+            "Something with \"quotes\""
+        );
+        assert_eq!(
+            unescape_string_content("tab\\t and newline\n"),
+            "tab\t and newline\n"
+        );
+        assert_eq!(unescape_string_content("hex\\u0021"), "hex!");
+        assert_eq!(unescape_string_content("\\t\\t"), "\t\t");
+    }
+
+    #[test]
+    fn unescaping_unknown_or_invalid() {
+        assert_eq!(unescape_string_content("not \\an escape"), "not an escape");
+        assert_eq!(
+            unescape_string_content("not \\u{34} escape"),
+            "not \\u{34} escape"
+        );
+    }
+
+    #[test]
+    fn unescaping_end() {
+        assert_eq!(unescape_string_content("ends with \\"), "ends with \\");
+    }
 }
