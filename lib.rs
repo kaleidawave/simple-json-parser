@@ -142,7 +142,6 @@ pub fn parse_with_options<'a, T>(
     options: &ParseOptions,
     mut cb: impl for<'b> FnMut(&'b [JSONKey<'a>], RootJSONValue<'a>) -> Option<T>,
 ) -> Result<(usize, Option<T>), JSONParseError> {
-    /// Does not check string is empty etc
     fn find_non_escaped_quoted(on: &str) -> Option<usize> {
         on.match_indices('"').find_map(|(idx, _)| {
             let rev = on[..idx].bytes();
@@ -152,12 +151,12 @@ pub fn parse_with_options<'a, T>(
     }
 
     fn parse_comment(on: &str) -> Option<(&str, usize)> {
-        if on.starts_with('#') {
-            let offset = on.find('\n').unwrap_or(on.len());
-            Some((&on[..offset][1..], offset))
-        } else if on.starts_with("//") {
-            let offset = on.find('\n').unwrap_or(on.len());
-            Some((&on[..offset][2..], offset))
+        if let Some(rest) = on.strip_prefix('#') {
+            let offset = rest.find('\n').unwrap_or(rest.len());
+            Some((&on[..offset], offset + 1))
+        } else if let Some(rest) = on.strip_prefix("//") {
+            let offset = rest.find('\n').unwrap_or(rest.len());
+            Some((&on[..offset], offset + 2))
         } else if let Some(rest) = on.strip_prefix("/*") {
             let offset = rest.find("*/")?;
             Some((&rest[..offset], offset + 4))
